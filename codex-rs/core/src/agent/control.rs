@@ -6,6 +6,8 @@ use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -39,7 +41,13 @@ impl AgentControl {
         headless: bool,
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
-        let new_thread = state.spawn_new_thread(config, self.clone()).await?;
+        let new_thread = state
+            .spawn_new_thread_with_source(
+                config,
+                self.clone(),
+                SessionSource::SubAgent(SubAgentSource::Other("collab".to_string())),
+            )
+            .await?;
 
         if headless {
             spawn_headless_drain(Arc::clone(&new_thread.thread));

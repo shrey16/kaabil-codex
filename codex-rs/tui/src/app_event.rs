@@ -5,7 +5,9 @@ use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_file_search::FileMatch;
+use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::protocol::AgentStatus;
 
 use crate::bottom_pane::ApprovalRequest;
 use crate::history_cell::HistoryCell;
@@ -26,6 +28,19 @@ pub(crate) enum WindowsSandboxEnableMode {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) enum WindowsSandboxFallbackReason {
     ElevationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPromptTarget {
+    Existing(ThreadId),
+    NewAgent,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentSummary {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) status: AgentStatus,
+    pub(crate) is_current: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -182,6 +197,20 @@ pub(crate) enum AppEvent {
 
     /// Re-open the approval presets popup.
     OpenApprovalsPopup,
+
+    /// Open the agent control panel.
+    OpenAgentsPanel,
+
+    /// Open the agent prompt overlay (new agent or existing agent).
+    OpenAgentPrompt {
+        target: AgentPromptTarget,
+    },
+
+    /// Send a prompt to an agent or spawn a new agent with a prompt.
+    SendAgentPrompt {
+        target: AgentPromptTarget,
+        prompt: String,
+    },
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),

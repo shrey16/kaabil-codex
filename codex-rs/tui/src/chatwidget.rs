@@ -67,6 +67,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::user_input::UserInput;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -84,6 +85,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use crate::app_event::AgentPromptTarget;
+use crate::app_event::AgentSummary;
 use crate::app_event::AppEvent;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -151,6 +154,7 @@ use strum::IntoEnumIterator;
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
 const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const AGENT_STATUS_PREVIEW_LEN: usize = 80;
 // Track information about an in-flight exec command.
 struct RunningCommand {
     command: Vec<String>,
@@ -1821,6 +1825,9 @@ impl ChatWidget {
             SlashCommand::Status => {
                 self.add_status_output();
             }
+            SlashCommand::Agents => {
+                self.app_event_tx.send(AppEvent::OpenAgentsPanel);
+            }
             SlashCommand::Ps => {
                 self.add_ps_output();
             }
@@ -3011,6 +3018,111 @@ impl ChatWidget {
 
         let view = ExperimentalFeaturesView::new(features, self.app_event_tx.clone());
         self.bottom_pane.show_view(Box::new(view));
+    }
+
+    pub(crate) fn open_agents_panel(&mut self, agents: Vec<AgentSummary>) {
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let new_agent_action: SelectionAction = Box::new(move |tx| {
+            tx.send(AppEvent::OpenAgentPrompt {
+                target: AgentPromptTarget::NewAgent,
+            });
+        });
+        items.push(SelectionItem {
+            name: "New agent".to_string(),
+            description: Some("Spawn a background agent and send an initial prompt.".to_string()),
+            actions: vec![new_agent_action],
+            dismiss_on_select: true,
+            search_value: Some("new agent spawn".to_string()),
+            ..Default::default()
+        });
+
+        for agent in agents {
+            let thread_id = agent.thread_id;
+            let short_id = Self::short_thread_id(thread_id);
+            let status_text = Self::agent_status_description(&agent.status);
+            let search_value = format!("{thread_id} {status_text}");
+            let disabled_reason = if agent.is_current {
+                Some("use the main composer".to_string())
+            } else if matches!(agent.status, AgentStatus::NotFound) {
+                Some("not found".to_string())
+            } else {
+                None
+            };
+            let open_action: SelectionAction = Box::new(move |tx| {
+                tx.send(AppEvent::OpenAgentPrompt {
+                    target: AgentPromptTarget::Existing(thread_id),
+                });
+            });
+            items.push(SelectionItem {
+                name: format!("Agent {short_id}"),
+                description: Some(status_text),
+                is_current: agent.is_current,
+                actions: vec![open_action],
+                dismiss_on_select: true,
+                disabled_reason,
+                search_value: Some(search_value),
+                ..Default::default()
+            });
+        }
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Agents".to_string()),
+            subtitle: Some("Select an agent to send a message.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Filter agents by id or status".to_string()),
+            header: Box::new(()),
+            ..Default::default()
+        });
+        self.request_redraw();
+    }
+
+    pub(crate) fn open_agent_prompt(&mut self, target: AgentPromptTarget) {
+        let (title, placeholder, context_label) = match target {
+            AgentPromptTarget::NewAgent => (
+                "Spawn new agent".to_string(),
+                "Type the initial prompt for the new agent.".to_string(),
+                None,
+            ),
+            AgentPromptTarget::Existing(thread_id) => (
+                format!("Message agent {}", Self::short_thread_id(thread_id)),
+                "Type a message for this agent.".to_string(),
+                Some(format!("Agent ID: {thread_id}")),
+            ),
+        };
+        let app_event_tx = self.app_event_tx.clone();
+        let on_submit = Box::new(move |prompt| {
+            app_event_tx.send(AppEvent::SendAgentPrompt { target, prompt });
+        });
+        let view = CustomPromptView::new(title, placeholder, context_label, on_submit);
+        self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
+    fn short_thread_id(thread_id: ThreadId) -> String {
+        let full = thread_id.to_string();
+        full.split('-').next().unwrap_or(&full).to_string()
+    }
+
+    fn agent_status_description(status: &AgentStatus) -> String {
+        match status {
+            AgentStatus::PendingInit => "Pending init".to_string(),
+            AgentStatus::Running => "Running".to_string(),
+            AgentStatus::Completed(Some(message)) => {
+                let cleaned = message.replace('\n', " ");
+                let preview = truncate_text(cleaned.as_str(), AGENT_STATUS_PREVIEW_LEN);
+                format!("Completed: {preview}")
+            }
+            AgentStatus::Completed(None) => "Completed".to_string(),
+            AgentStatus::Errored(message) => {
+                let cleaned = message.replace('\n', " ");
+                let preview = truncate_text(cleaned.as_str(), AGENT_STATUS_PREVIEW_LEN);
+                format!("Errored: {preview}")
+            }
+            AgentStatus::Shutdown => "Shutdown".to_string(),
+            AgentStatus::NotFound => "Not found".to_string(),
+        }
     }
 
     fn approval_preset_actions(

@@ -6,6 +6,10 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Agent orchestration
+
+For the kaabil-codex multi-agent orchestration feature, see `docs/agent-orchestration.md`.
+
 ## Connecting to MCP servers
 
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:

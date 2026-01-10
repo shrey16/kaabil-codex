@@ -1,4 +1,6 @@
 use crate::app_backtrack::BacktrackState;
+use crate::app_event::AgentPromptTarget;
+use crate::app_event::AgentSummary;
 use crate::app_event::AppEvent;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -26,6 +28,7 @@ use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use codex_ansi_escape::ansi_escape_line;
 use codex_core::AuthManager;
+use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEdit;
@@ -46,6 +49,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::AgentStatus;
+use codex_protocol::user_input::UserInput;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
@@ -56,6 +61,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -321,6 +327,9 @@ pub(crate) struct App {
 
     // One-shot suppression of the next world-writable scan after user confirmation.
     skip_world_writable_scan_once: bool,
+
+    // Track background agent threads that are being drained.
+    agent_drains: HashSet<ThreadId>,
 }
 
 impl App {
@@ -329,6 +338,116 @@ impl App {
             self.suppress_shutdown_complete = true;
             self.chat_widget.submit_op(Op::Shutdown);
             self.server.remove_thread(&thread_id).await;
+        }
+    }
+
+    fn ensure_agent_drain(&mut self, thread_id: ThreadId, thread: Arc<CodexThread>) {
+        if !self.agent_drains.insert(thread_id) {
+            return;
+        }
+        tokio::spawn(async move {
+            loop {
+                match thread.next_event().await {
+                    Ok(event) => {
+                        if matches!(event.msg, EventMsg::ShutdownComplete) {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            %thread_id,
+                            error = ?err,
+                            "failed to receive event from agent"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    async fn open_agents_panel(&mut self) {
+        let current_id = self.chat_widget.thread_id();
+        let mut summaries = Vec::new();
+        for thread_id in self.server.list_thread_ids().await {
+            let status = match self.server.get_thread(thread_id).await {
+                Ok(thread) => {
+                    if current_id != Some(thread_id) {
+                        self.ensure_agent_drain(thread_id, Arc::clone(&thread));
+                    }
+                    thread.agent_status().await
+                }
+                Err(_) => AgentStatus::NotFound,
+            };
+            summaries.push(AgentSummary {
+                thread_id,
+                status,
+                is_current: current_id == Some(thread_id),
+            });
+        }
+
+        summaries.sort_by(|a, b| {
+            b.is_current
+                .cmp(&a.is_current)
+                .then_with(|| a.thread_id.to_string().cmp(&b.thread_id.to_string()))
+        });
+
+        self.chat_widget.open_agents_panel(summaries);
+    }
+
+    async fn send_prompt_to_agent(&mut self, thread_id: ThreadId, prompt: String) {
+        let thread = match self.server.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Agent {thread_id} not found: {err}"));
+                return;
+            }
+        };
+
+        if self.chat_widget.thread_id() != Some(thread_id) {
+            self.ensure_agent_drain(thread_id, Arc::clone(&thread));
+        }
+
+        let op = Op::UserInput {
+            items: vec![UserInput::Text { text: prompt }],
+            final_output_json_schema: None,
+        };
+        match thread.submit(op).await {
+            Ok(_) => self
+                .chat_widget
+                .add_info_message(format!("Sent message to agent {thread_id}"), None),
+            Err(err) => self.chat_widget.add_error_message(format!(
+                "Failed to send message to agent {thread_id}: {err}"
+            )),
+        }
+    }
+
+    async fn spawn_agent_with_prompt(&mut self, prompt: String) {
+        let mut config = self.chat_widget.config_ref().clone();
+        config.model = Some(self.current_model.clone());
+        let new_thread = match self.server.start_thread(config).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to spawn agent: {err}"));
+                return;
+            }
+        };
+        let thread_id = new_thread.thread_id;
+        self.ensure_agent_drain(thread_id, Arc::clone(&new_thread.thread));
+
+        let op = Op::UserInput {
+            items: vec![UserInput::Text { text: prompt }],
+            final_output_json_schema: None,
+        };
+        match new_thread.thread.submit(op).await {
+            Ok(_) => self
+                .chat_widget
+                .add_info_message(format!("Spawned agent {thread_id}"), None),
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to send prompt to agent {thread_id}: {err}")),
         }
     }
 
@@ -440,6 +559,7 @@ impl App {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
+            agent_drains: HashSet::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -1148,6 +1268,20 @@ impl App {
             AppEvent::OpenApprovalsPopup => {
                 self.chat_widget.open_approvals_popup();
             }
+            AppEvent::OpenAgentsPanel => {
+                self.open_agents_panel().await;
+            }
+            AppEvent::OpenAgentPrompt { target } => {
+                self.chat_widget.open_agent_prompt(target);
+            }
+            AppEvent::SendAgentPrompt { target, prompt } => match target {
+                AgentPromptTarget::Existing(thread_id) => {
+                    self.send_prompt_to_agent(thread_id, prompt).await;
+                }
+                AgentPromptTarget::NewAgent => {
+                    self.spawn_agent_with_prompt(prompt).await;
+                }
+            },
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
             }
@@ -1450,6 +1584,7 @@ mod tests {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
+            agent_drains: HashSet::new(),
         }
     }
 
@@ -1490,6 +1625,7 @@ mod tests {
                 pending_update_action: None,
                 suppress_shutdown_complete: false,
                 skip_world_writable_scan_once: false,
+                agent_drains: HashSet::new(),
             },
             rx,
             op_rx,

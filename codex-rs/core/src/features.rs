@@ -96,6 +96,8 @@ pub enum Feature {
     EnableRequestCompression,
     /// Enable collab tools.
     Collab,
+    /// Enable orchestration persona and subagent personas.
+    AgentOrchestration,
 }
 
 impl Feature {
@@ -411,6 +413,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Collab,
         key: "collab",
+        stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentOrchestration,
+        key: "agent_orchestration",
         stage: Stage::Experimental,
         default_enabled: false,
     },

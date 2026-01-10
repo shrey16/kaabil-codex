@@ -10,7 +10,11 @@ use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentStatus;
 use serde::Deserialize;
+use tokio::time::Duration;
+use tokio::time::Instant;
+use tokio::time::sleep;
 
 pub struct CollabHandler;
 
@@ -20,6 +24,7 @@ pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
 #[derive(Debug, Deserialize)]
 struct SpawnAgentArgs {
     message: String,
+    persona: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +75,7 @@ impl ToolHandler for CollabHandler {
         match tool_name.as_str() {
             "spawn_agent" => handle_spawn_agent(session, turn, arguments).await,
             "send_input" => handle_send_input(session, arguments).await,
-            "wait" => handle_wait(arguments).await,
+            "wait" => handle_wait(session, arguments).await,
             "close_agent" => handle_close_agent(arguments).await,
             other => Err(FunctionCallError::RespondToModel(format!(
                 "unsupported collab tool {other}"
@@ -90,7 +95,13 @@ async fn handle_spawn_agent(
             "Empty message can't be send to an agent".to_string(),
         ));
     }
-    let config = build_agent_spawn_config(turn.as_ref())?;
+    let mut config = build_agent_spawn_config(turn.as_ref())?;
+    let orchestrator_id = session.conversation_id();
+    config.developer_instructions = crate::agent_personas::with_subagent_instructions(
+        config.developer_instructions.as_deref(),
+        args.persona.as_deref(),
+        orchestrator_id,
+    );
     let result = session
         .services
         .agent_control
@@ -135,9 +146,12 @@ async fn handle_send_input(
     })
 }
 
-async fn handle_wait(arguments: String) -> Result<ToolOutput, FunctionCallError> {
+async fn handle_wait(
+    session: std::sync::Arc<crate::codex::Session>,
+    arguments: String,
+) -> Result<ToolOutput, FunctionCallError> {
     let args: WaitArgs = parse_arguments(&arguments)?;
-    let _agent_id = agent_id(&args.id)?;
+    let agent_id = agent_id(&args.id)?;
 
     let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
     if timeout_ms <= 0 {
@@ -145,9 +159,26 @@ async fn handle_wait(arguments: String) -> Result<ToolOutput, FunctionCallError>
             "timeout_ms must be greater than zero".to_string(),
         ));
     }
-    let _timeout_ms = timeout_ms.min(MAX_WAIT_TIMEOUT_MS);
-    // TODO(jif): implement agent wait once lifecycle tracking is wired up.
-    Err(FunctionCallError::Fatal("wait not implemented".to_string()))
+    let timeout_ms = timeout_ms.min(MAX_WAIT_TIMEOUT_MS) as u64;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
+    loop {
+        let status = session.services.agent_control.get_status(agent_id).await;
+        if !matches!(status, AgentStatus::PendingInit | AgentStatus::Running) {
+            let content = serde_json::to_string(&status).unwrap_or_else(|_| format!("{status:?}"));
+            return Ok(ToolOutput::Function {
+                content,
+                success: Some(true),
+                content_items: None,
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "wait timed out; last status was {status:?}"
+            )));
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
 }
 
 async fn handle_close_agent(arguments: String) -> Result<ToolOutput, FunctionCallError> {

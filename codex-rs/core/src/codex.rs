@@ -492,6 +492,12 @@ impl Session {
         per_turn_config.model_reasoning_effort = session_configuration.model_reasoning_effort;
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.features = config.features.clone();
+        if per_turn_config
+            .features
+            .enabled(Feature::AgentOrchestration)
+        {
+            per_turn_config.features.enable(Feature::Collab);
+        }
         per_turn_config
     }
 
@@ -529,11 +535,25 @@ impl Session {
             features: &per_turn_config.features,
         });
 
+        let developer_instructions = if per_turn_config
+            .features
+            .enabled(Feature::AgentOrchestration)
+            && !matches!(
+                session_configuration.session_source,
+                SessionSource::SubAgent(_)
+            ) {
+            crate::agent_personas::with_orchestrator_instructions(
+                session_configuration.developer_instructions.as_deref(),
+            )
+        } else {
+            session_configuration.developer_instructions.clone()
+        };
+
         TurnContext {
             sub_id,
             client,
             cwd: session_configuration.cwd.clone(),
-            developer_instructions: session_configuration.developer_instructions.clone(),
+            developer_instructions,
             base_instructions: session_configuration.base_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration.user_instructions.clone(),
@@ -547,6 +567,10 @@ impl Session {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
         }
+    }
+
+    pub(crate) fn conversation_id(&self) -> ThreadId {
+        self.conversation_id
     }
 
     #[allow(clippy::too_many_arguments)]

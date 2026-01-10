@@ -43,7 +43,8 @@ impl ToolsConfig {
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_web_search_cached = features.enabled(Feature::WebSearchCached);
-        let include_collab_tools = features.enabled(Feature::Collab);
+        let include_collab_tools =
+            features.enabled(Feature::Collab) || features.enabled(Feature::AgentOrchestration);
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -431,6 +432,12 @@ fn create_spawn_agent_tool() -> ToolSpec {
         "message".to_string(),
         JsonSchema::String {
             description: Some("Initial message to send to the new agent.".to_string()),
+        },
+    );
+    properties.insert(
+        "persona".to_string(),
+        JsonSchema::String {
+            description: Some("Optional persona instructions for the new agent.".to_string()),
         },
     );
 
@@ -1427,6 +1434,23 @@ mod tests {
         let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::Collab);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+        });
+        let (tools, _) = build_specs(&tools_config, None).build();
+        assert_contains_tool_names(
+            &tools,
+            &["spawn_agent", "send_input", "wait", "close_agent"],
+        );
+    }
+
+    #[test]
+    fn test_build_specs_orchestration_enables_collab_tools() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::AgentOrchestration);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,

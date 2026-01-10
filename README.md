@@ -9,6 +9,15 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Kaabil fork notice
+
+This is an experimental fork of Codex CLI built and maintained by Kaabil for its own development purposes.
+It is not the official Codex distribution provided by OpenAI. Use at your own risk.
+
+Versioning follows upstream with a `-kaabil.N` suffix (example: `0.80.0-kaabil.0`).
+To bump to a newer upstream release, run `./scripts/bump-kaabil-version.sh --upstream <version>`
+or `./scripts/bump-kaabil-version.sh --auto` to fetch the latest npm release.
+
 ## Quickstart
 
 ### Installing and running Codex CLI
