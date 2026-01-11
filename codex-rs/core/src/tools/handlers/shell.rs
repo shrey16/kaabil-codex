@@ -8,6 +8,7 @@ use crate::exec::ExecParams;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::is_safe_command::is_known_safe_command;
+use crate::parse_command::shlex_join;
 use crate::protocol::ExecCommandSource;
 use crate::shell::Shell;
 use crate::tools::context::ToolInvocation;
@@ -106,6 +107,16 @@ impl ToolHandler for ShellHandler {
         match payload {
             ToolPayload::Function { arguments } => {
                 let params: ShellToolCallParams = parse_arguments(&arguments)?;
+                let command = shlex_join(&params.command);
+                if !turn
+                    .tools_config
+                    .tool_policy
+                    .shell_command_allowed(&command)
+                {
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "shell command \"{command}\" rejected by tool policy"
+                    )));
+                }
                 let exec_params = Self::to_exec_params(params, turn.as_ref());
                 Self::run_exec_like(
                     tool_name.as_str(),
@@ -119,6 +130,16 @@ impl ToolHandler for ShellHandler {
                 .await
             }
             ToolPayload::LocalShell { params } => {
+                let command = shlex_join(&params.command);
+                if !turn
+                    .tools_config
+                    .tool_policy
+                    .shell_command_allowed(&command)
+                {
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "shell command \"{command}\" rejected by tool policy"
+                    )));
+                }
                 let exec_params = Self::to_exec_params(params, turn.as_ref());
                 Self::run_exec_like(
                     tool_name.as_str(),
@@ -179,6 +200,14 @@ impl ToolHandler for ShellCommandHandler {
         };
 
         let params: ShellCommandToolCallParams = parse_arguments(&arguments)?;
+        {
+            let command = params.command.as_str();
+            if !turn.tools_config.tool_policy.shell_command_allowed(command) {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "shell command \"{command}\" rejected by tool policy"
+                )));
+            }
+        }
         let exec_params = Self::to_exec_params(params, session.as_ref(), turn.as_ref());
         ShellHandler::run_exec_like(
             tool_name.as_str(),

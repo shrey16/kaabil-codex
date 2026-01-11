@@ -27,19 +27,20 @@ pub(crate) struct ToolsConfig {
     pub web_search_cached: bool,
     pub collab_tools: bool,
     pub experimental_supported_tools: Vec<String>,
+    pub tool_policy: crate::config::types::ToolPolicy,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_info: &'a ModelInfo,
     pub(crate) features: &'a Features,
+    pub(crate) tool_policy: &'a crate::config::types::ToolPolicy,
 }
 
 impl ToolsConfig {
     pub fn new(params: &ToolsConfigParams) -> Self {
-        let ToolsConfigParams {
-            model_info,
-            features,
-        } = params;
+        let model_info = params.model_info;
+        let features = params.features;
+        let tool_policy = params.tool_policy.to_owned();
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_web_search_cached = features.enabled(Feature::WebSearchCached);
@@ -78,6 +79,7 @@ impl ToolsConfig {
             web_search_cached: include_web_search_cached,
             collab_tools: include_collab_tools,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
+            tool_policy,
         }
     }
 }
@@ -440,6 +442,43 @@ fn create_spawn_agent_tool() -> ToolSpec {
             description: Some("Optional persona instructions for the new agent.".to_string()),
         },
     );
+    properties.insert(
+        "tool_allowlist".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional allowlist of tool names/patterns (for example \"shell\", \"mcp__server__tool\"). If set, only matching tools are exposed.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "tool_denylist".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional denylist of tool names/patterns. Matching tools are removed.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "shell_command_allowlist".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional allowlist of shell command patterns. If set, only matching commands may run.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "shell_command_denylist".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "Optional denylist of shell command patterns. Matching commands are rejected."
+                    .to_string(),
+            ),
+        },
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
@@ -458,7 +497,10 @@ fn create_send_input_tool() -> ToolSpec {
     properties.insert(
         "id".to_string(),
         JsonSchema::String {
-            description: Some("Identifier of the agent to message.".to_string()),
+            description: Some(
+                "Identifier of the agent to message. Subagents may only send to their parent."
+                    .to_string(),
+            ),
         },
     );
     properties.insert(
@@ -470,7 +512,7 @@ fn create_send_input_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_input".to_string(),
-        description: "Send a message to an existing agent.".to_string(),
+        description: "Post a message to the group chat and ping a subagent.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -517,10 +559,60 @@ fn create_close_agent_tool() -> ToolSpec {
             description: Some("Identifier of the agent to close.".to_string()),
         },
     );
+    properties.insert(
+        "timeout_ms".to_string(),
+        JsonSchema::Number {
+            description: Some(format!(
+                "Optional timeout in milliseconds. Defaults to {DEFAULT_WAIT_TIMEOUT_MS} and max {MAX_WAIT_TIMEOUT_MS}."
+            )),
+        },
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "close_agent".to_string(),
         description: "Close an agent and return its last known status.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_list_agents_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_agents".to_string(),
+        description: "List subagents spawned by this session.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_agent_output_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "id".to_string(),
+        JsonSchema::String {
+            description: Some("Identifier of the agent to inspect.".to_string()),
+        },
+    );
+    properties.insert(
+        "max_chars".to_string(),
+        JsonSchema::Number {
+            description: Some("Optional max chars to return from the partial output.".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "agent_output".to_string(),
+        description:
+            "Fetch the latest partial or final output for a subagent, including reasoning and tool events when available."
+                .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -1134,47 +1226,76 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
+    let tool_allowed = |name: &str| config.tool_policy.tool_allowed(name);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
-            builder.push_spec(create_shell_tool());
+            if tool_allowed("shell") {
+                builder.push_spec(create_shell_tool());
+            }
         }
         ConfigShellToolType::Local => {
-            builder.push_spec(ToolSpec::LocalShell {});
+            if tool_allowed("local_shell") {
+                builder.push_spec(ToolSpec::LocalShell {});
+            }
         }
         ConfigShellToolType::UnifiedExec => {
-            builder.push_spec(create_exec_command_tool());
-            builder.push_spec(create_write_stdin_tool());
-            builder.register_handler("exec_command", unified_exec_handler.clone());
-            builder.register_handler("write_stdin", unified_exec_handler);
+            if tool_allowed("exec_command") {
+                builder.push_spec(create_exec_command_tool());
+                builder.register_handler("exec_command", unified_exec_handler.clone());
+            }
+            if tool_allowed("write_stdin") {
+                builder.push_spec(create_write_stdin_tool());
+                builder.register_handler("write_stdin", unified_exec_handler);
+            }
         }
         ConfigShellToolType::Disabled => {
             // Do nothing.
         }
         ConfigShellToolType::ShellCommand => {
-            builder.push_spec(create_shell_command_tool());
+            if tool_allowed("shell_command") {
+                builder.push_spec(create_shell_command_tool());
+            }
         }
     }
 
     if config.shell_type != ConfigShellToolType::Disabled {
         // Always register shell aliases so older prompts remain compatible.
-        builder.register_handler("shell", shell_handler.clone());
-        builder.register_handler("container.exec", shell_handler.clone());
-        builder.register_handler("local_shell", shell_handler);
-        builder.register_handler("shell_command", shell_command_handler);
+        if tool_allowed("shell") {
+            builder.register_handler("shell", shell_handler.clone());
+        }
+        if tool_allowed("container.exec") {
+            builder.register_handler("container.exec", shell_handler.clone());
+        }
+        if tool_allowed("local_shell") {
+            builder.register_handler("local_shell", shell_handler);
+        }
+        if tool_allowed("shell_command") {
+            builder.register_handler("shell_command", shell_command_handler);
+        }
     }
 
-    builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
-    builder.push_spec_with_parallel_support(create_list_mcp_resource_templates_tool(), true);
-    builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(), true);
-    builder.register_handler("list_mcp_resources", mcp_resource_handler.clone());
-    builder.register_handler("list_mcp_resource_templates", mcp_resource_handler.clone());
-    builder.register_handler("read_mcp_resource", mcp_resource_handler);
+    if tool_allowed("list_mcp_resources") {
+        builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
+        builder.register_handler("list_mcp_resources", mcp_resource_handler.clone());
+    }
+    if tool_allowed("list_mcp_resource_templates") {
+        builder.push_spec_with_parallel_support(create_list_mcp_resource_templates_tool(), true);
+        builder.register_handler("list_mcp_resource_templates", mcp_resource_handler.clone());
+    }
+    if tool_allowed("read_mcp_resource") {
+        builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(), true);
+        builder.register_handler("read_mcp_resource", mcp_resource_handler);
+    }
 
-    builder.push_spec(PLAN_TOOL.clone());
-    builder.register_handler("update_plan", plan_handler);
+    if tool_allowed("update_plan") {
+        builder.push_spec(PLAN_TOOL.clone());
+        builder.register_handler("update_plan", plan_handler);
+    }
 
-    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type
+        && tool_allowed("apply_patch")
+    {
         match apply_patch_tool_type {
             ApplyPatchToolType::Freeform => {
                 builder.push_spec(create_apply_patch_freeform_tool());
@@ -1189,6 +1310,7 @@ pub(crate) fn build_specs(
     if config
         .experimental_supported_tools
         .contains(&"grep_files".to_string())
+        && tool_allowed("grep_files")
     {
         let grep_files_handler = Arc::new(GrepFilesHandler);
         builder.push_spec_with_parallel_support(create_grep_files_tool(), true);
@@ -1198,6 +1320,7 @@ pub(crate) fn build_specs(
     if config
         .experimental_supported_tools
         .contains(&"read_file".to_string())
+        && tool_allowed("read_file")
     {
         let read_file_handler = Arc::new(ReadFileHandler);
         builder.push_spec_with_parallel_support(create_read_file_tool(), true);
@@ -1208,6 +1331,7 @@ pub(crate) fn build_specs(
         .experimental_supported_tools
         .iter()
         .any(|tool| tool == "list_dir")
+        && tool_allowed("list_dir")
     {
         let list_dir_handler = Arc::new(ListDirHandler);
         builder.push_spec_with_parallel_support(create_list_dir_tool(), true);
@@ -1217,6 +1341,7 @@ pub(crate) fn build_specs(
     if config
         .experimental_supported_tools
         .contains(&"test_sync_tool".to_string())
+        && tool_allowed("test_sync_tool")
     {
         let test_sync_handler = Arc::new(TestSyncHandler);
         builder.push_spec_with_parallel_support(create_test_sync_tool(), true);
@@ -1225,28 +1350,48 @@ pub(crate) fn build_specs(
 
     // Prefer web_search_cached flag over web_search_request
     if config.web_search_cached {
-        builder.push_spec(ToolSpec::WebSearch {
-            external_web_access: Some(false),
-        });
-    } else if config.web_search_request {
+        if tool_allowed("web_search") {
+            builder.push_spec(ToolSpec::WebSearch {
+                external_web_access: Some(false),
+            });
+        }
+    } else if config.web_search_request && tool_allowed("web_search") {
         builder.push_spec(ToolSpec::WebSearch {
             external_web_access: Some(true),
         });
     }
 
-    builder.push_spec_with_parallel_support(create_view_image_tool(), true);
-    builder.register_handler("view_image", view_image_handler);
+    if tool_allowed("view_image") {
+        builder.push_spec_with_parallel_support(create_view_image_tool(), true);
+        builder.register_handler("view_image", view_image_handler);
+    }
 
     if config.collab_tools {
         let collab_handler = Arc::new(CollabHandler);
-        builder.push_spec(create_spawn_agent_tool());
-        builder.push_spec(create_send_input_tool());
-        builder.push_spec(create_wait_tool());
-        builder.push_spec(create_close_agent_tool());
-        builder.register_handler("spawn_agent", collab_handler.clone());
-        builder.register_handler("send_input", collab_handler.clone());
-        builder.register_handler("wait", collab_handler.clone());
-        builder.register_handler("close_agent", collab_handler);
+        if tool_allowed("spawn_agent") {
+            builder.push_spec(create_spawn_agent_tool());
+            builder.register_handler("spawn_agent", collab_handler.clone());
+        }
+        if tool_allowed("send_input") {
+            builder.push_spec(create_send_input_tool());
+            builder.register_handler("send_input", collab_handler.clone());
+        }
+        if tool_allowed("wait") {
+            builder.push_spec(create_wait_tool());
+            builder.register_handler("wait", collab_handler.clone());
+        }
+        if tool_allowed("close_agent") {
+            builder.push_spec(create_close_agent_tool());
+            builder.register_handler("close_agent", collab_handler.clone());
+        }
+        if tool_allowed("list_agents") {
+            builder.push_spec(create_list_agents_tool());
+            builder.register_handler("list_agents", collab_handler.clone());
+        }
+        if tool_allowed("agent_output") {
+            builder.push_spec(create_agent_output_tool());
+            builder.register_handler("agent_output", collab_handler);
+        }
     }
 
     if let Some(mcp_tools) = mcp_tools {
@@ -1254,6 +1399,9 @@ pub(crate) fn build_specs(
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (name, tool) in entries.into_iter() {
+            if !tool_allowed(name.as_str()) {
+                continue;
+            }
             match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
                 Ok(converted_tool) => {
                     builder.push_spec(ToolSpec::Function(converted_tool));
@@ -1273,6 +1421,7 @@ pub(crate) fn build_specs(
 mod tests {
     use crate::client_common::tools::FreeformTool;
     use crate::config::test_config;
+    use crate::config::types::ToolPolicy;
     use crate::models_manager::manager::ModelsManager;
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
@@ -1376,6 +1525,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1437,11 +1587,19 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
         assert_contains_tool_names(
             &tools,
-            &["spawn_agent", "send_input", "wait", "close_agent"],
+            &[
+                "spawn_agent",
+                "send_input",
+                "wait",
+                "close_agent",
+                "list_agents",
+                "agent_output",
+            ],
         );
     }
 
@@ -1454,11 +1612,19 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
         assert_contains_tool_names(
             &tools,
-            &["spawn_agent", "send_input", "wait", "close_agent"],
+            &[
+                "spawn_agent",
+                "send_input",
+                "wait",
+                "close_agent",
+                "list_agents",
+                "agent_output",
+            ],
         );
     }
 
@@ -1468,6 +1634,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1484,6 +1651,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1507,6 +1675,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1709,6 +1878,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
 
@@ -1730,6 +1900,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1748,6 +1919,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1779,6 +1951,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -1873,6 +2046,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1950,6 +2124,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
 
         let (tools, _) = build_specs(
@@ -2007,6 +2182,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
 
         let (tools, _) = build_specs(
@@ -2061,6 +2237,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
 
         let (tools, _) = build_specs(
@@ -2117,6 +2294,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
 
         let (tools, _) = build_specs(
@@ -2229,6 +2407,7 @@ Examples of valid command strings:
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            tool_policy: &ToolPolicy::default(),
         });
         let (tools, _) = build_specs(
             &tools_config,

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use crate::SandboxState;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent::control::SubagentSummary;
 use crate::client_common::REVIEW_PROMPT;
 use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
@@ -34,6 +36,7 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ExecPolicyAmendment;
+use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::FileChange;
@@ -107,11 +110,15 @@ use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ExecApprovalRequestEvent;
+use crate::protocol::GroupChatMessageEvent;
+use crate::protocol::GroupChatSender;
 use crate::protocol::Op;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::ReviewDecision;
+use crate::protocol::SUBAGENT_MESSAGE_PREFIX;
+use crate::protocol::SUBAGENT_MESSAGE_SUFFIX;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::SkillErrorInfo;
@@ -533,6 +540,7 @@ impl Session {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &per_turn_config.features,
+            tool_policy: &per_turn_config.tool_policy,
         });
 
         let developer_instructions = if per_turn_config
@@ -598,6 +606,9 @@ impl Session {
             ));
         }
 
+        let should_spawn_default_subagents = config.features.enabled(Feature::AgentOrchestration)
+            && !matches!(session_source, SessionSource::SubAgent(_));
+
         let (conversation_id, rollout_params) = match &initial_history {
             InitialHistory::New | InitialHistory::Forked(_) => {
                 let conversation_id = ThreadId::default();
@@ -648,7 +659,7 @@ impl Session {
                 None
             } else {
                 Some(format!(
-                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/openai/codex/blob/main/docs/config.md#feature-flags for details."
+                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/shrey16/kaabil-codex/blob/main/docs/config.md#feature-flags for details."
                 ))
             };
             post_session_configured_events.push(Event {
@@ -738,6 +749,7 @@ impl Session {
         // Dispatch the SessionConfiguredEvent first and then report any errors.
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = initial_history.get_event_msgs();
+        let group_chat_seed = initial_messages.clone().unwrap_or_default();
         let events = std::iter::once(Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -782,6 +794,17 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        sess.seed_group_chat(group_chat_seed).await;
+
+        if should_spawn_default_subagents {
+            let sess = Arc::clone(&sess);
+            tokio::task::spawn_blocking(move || {
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(async move {
+                    sess.spawn_default_subagents().await;
+                });
+            });
+        }
 
         Ok(sess)
     }
@@ -878,6 +901,39 @@ impl Session {
                 }
                 // Flush after seeding history and any persisted rollout copy.
                 self.flush_rollout().await;
+            }
+        }
+    }
+
+    async fn spawn_default_subagents(self: Arc<Self>) {
+        let turn = self.new_default_turn().await;
+        let parent_id = self.conversation_id();
+        for template in crate::agent_personas::DEFAULT_SUBAGENT_TEMPLATES {
+            let mut config = match crate::agent::build_agent_spawn_config(turn.as_ref()) {
+                Ok(config) => config,
+                Err(err) => {
+                    warn!("failed to build subagent config: {err}");
+                    continue;
+                }
+            };
+            config.developer_instructions = crate::agent_personas::with_subagent_instructions(
+                config.developer_instructions.as_deref(),
+                Some(template.persona),
+                parent_id,
+            );
+            let result = self
+                .services
+                .agent_control
+                .spawn_agent(
+                    parent_id,
+                    config,
+                    template.initial_message.to_string(),
+                    true,
+                    Some(template.persona.to_string()),
+                )
+                .await;
+            if let Err(err) = result {
+                warn!("failed to spawn default subagent: {err}");
             }
         }
     }
@@ -1097,6 +1153,8 @@ impl Session {
         turn_context: &TurnContext,
         item: TurnItem,
     ) {
+        self.maybe_emit_group_chat_message(turn_context, &item)
+            .await;
         self.send_event(
             turn_context,
             EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -1106,6 +1164,213 @@ impl Session {
             }),
         )
         .await;
+    }
+
+    async fn maybe_emit_group_chat_message(&self, turn_context: &TurnContext, item: &TurnItem) {
+        if !self.features.enabled(Feature::AgentOrchestration) {
+            return;
+        }
+        if self.is_subagent_session().await {
+            return;
+        }
+        let Some((sender, text)) = group_chat_message_from_item(item) else {
+            return;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let mentions = self.resolve_group_chat_mentions(text, &[]).await;
+        let display_text = format_group_chat_display_text(text, &mentions);
+        let message = GroupChatMessageEvent {
+            sender,
+            text: display_text,
+            display: true,
+        };
+        self.emit_group_chat_message(turn_context, message).await;
+        self.deliver_group_chat_mentions(turn_context.sub_id.clone(), &mentions)
+            .await;
+    }
+
+    async fn is_subagent_session(&self) -> bool {
+        let state = self.state.lock().await;
+        matches!(
+            state.session_configuration.session_source,
+            SessionSource::SubAgent(_)
+        )
+    }
+
+    async fn emit_group_chat_message(
+        &self,
+        turn_context: &TurnContext,
+        message: GroupChatMessageEvent,
+    ) {
+        self.append_group_chat_message(&message).await;
+        self.send_event(turn_context, EventMsg::GroupChatMessage(message))
+            .await;
+    }
+
+    async fn emit_group_chat_message_raw(&self, sub_id: String, message: GroupChatMessageEvent) {
+        self.append_group_chat_message(&message).await;
+        self.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::GroupChatMessage(message),
+        })
+        .await;
+    }
+
+    async fn append_group_chat_message(&self, message: &GroupChatMessageEvent) {
+        let mut state = self.state.lock().await;
+        state.group_chat.append(message.clone());
+    }
+
+    pub(crate) async fn process_group_chat_message(
+        &self,
+        sub_id: String,
+        text: String,
+        mentions: Vec<ThreadId>,
+        sender: GroupChatSender,
+    ) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let mentions = self.resolve_group_chat_mentions(trimmed, &mentions).await;
+        let display_text = format_group_chat_display_text(trimmed, &mentions);
+        let event = GroupChatMessageEvent {
+            sender: sender.clone(),
+            text: display_text,
+            display: true,
+        };
+        self.emit_group_chat_message_raw(sub_id.clone(), event)
+            .await;
+
+        if matches!(
+            sender,
+            GroupChatSender::Human | GroupChatSender::SubAgent { .. }
+        ) {
+            let turn_context = self.new_default_turn().await;
+            let history_text = format_group_chat_history_text(&sender, trimmed, &mentions);
+            if !history_text.is_empty() {
+                let item = ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText { text: history_text }],
+                };
+                self.record_conversation_items(&turn_context, &[item]).await;
+            }
+        }
+
+        self.deliver_group_chat_mentions(sub_id, &mentions).await;
+    }
+
+    async fn seed_group_chat(&self, events: Vec<EventMsg>) {
+        if !self.features.enabled(Feature::AgentOrchestration) {
+            return;
+        }
+        if self.is_subagent_session().await {
+            return;
+        }
+        let mut state = self.state.lock().await;
+        for event in events {
+            if let EventMsg::GroupChatMessage(message) = event {
+                state.group_chat.append(message);
+            }
+        }
+    }
+
+    async fn unread_group_chat_messages(
+        &self,
+        subagent_id: ThreadId,
+    ) -> (usize, Vec<GroupChatMessageEvent>) {
+        let state = self.state.lock().await;
+        state.group_chat.unread_messages(subagent_id)
+    }
+
+    async fn mark_group_chat_read(&self, subagent_id: ThreadId, cursor: usize) {
+        let mut state = self.state.lock().await;
+        state.group_chat.mark_read(subagent_id, cursor);
+    }
+
+    async fn resolve_group_chat_mentions(
+        &self,
+        text: &str,
+        explicit_mentions: &[ThreadId],
+    ) -> Vec<ThreadId> {
+        let mut mentions: HashSet<ThreadId> = explicit_mentions.iter().copied().collect();
+        let tokens = parse_group_chat_mention_tokens(text);
+        if tokens.is_empty() {
+            return sorted_thread_ids(mentions);
+        }
+        let subagents = match self
+            .services
+            .agent_control
+            .list_subagents(self.conversation_id)
+            .await
+        {
+            Ok(subagents) => subagents,
+            Err(err) => {
+                warn!("failed to resolve group chat mentions: {err}");
+                return sorted_thread_ids(mentions);
+            }
+        };
+        let aliases = build_subagent_aliases(&subagents);
+        for token in tokens {
+            let key = normalize_mention_key(token.as_str());
+            if let Some(Some(id)) = aliases.get(&key) {
+                mentions.insert(*id);
+            }
+        }
+        sorted_thread_ids(mentions)
+    }
+
+    async fn deliver_group_chat_mentions(&self, sub_id: String, mentions: &[ThreadId]) {
+        if mentions.is_empty() {
+            return;
+        }
+        let parent_id = self.conversation_id;
+        for mention in mentions {
+            let is_subagent = match self
+                .services
+                .agent_control
+                .is_subagent_of(parent_id, *mention)
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("group chat mention check failed: {err}");
+                    continue;
+                }
+            };
+            if !is_subagent {
+                let message = format!("subagent {mention} not found");
+                self.send_event_raw(Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::Warning(WarningEvent { message }),
+                })
+                .await;
+                continue;
+            }
+
+            let (cursor, unread) = self.unread_group_chat_messages(*mention).await;
+            if unread.is_empty() {
+                continue;
+            }
+            let prompt = format_group_chat_prompt(&unread);
+            match self
+                .services
+                .agent_control
+                .send_prompt(*mention, prompt)
+                .await
+            {
+                Ok(_) => {
+                    self.mark_group_chat_read(*mention, cursor).await;
+                }
+                Err(err) => {
+                    warn!("failed to deliver group chat prompt: {err}");
+                }
+            }
+        }
     }
 
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
@@ -1729,6 +1994,13 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::AddToHistory { text } => {
                 handlers::add_to_history(&sess, &config, text).await;
             }
+            Op::GroupChatMessage {
+                text,
+                mentions,
+                sender,
+            } => {
+                handlers::group_chat_message(&sess, sub.id.clone(), text, mentions, sender).await;
+            }
             Op::GetHistoryEntryRequest { offset, log_id } => {
                 handlers::get_history_entry_request(&sess, &config, sub.id.clone(), offset, log_id)
                     .await;
@@ -1781,6 +2053,190 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
     debug!("Agent loop exited");
 }
 
+fn group_chat_message_from_item(item: &TurnItem) -> Option<(GroupChatSender, String)> {
+    match item {
+        TurnItem::UserMessage(message) => Some((GroupChatSender::Human, message.message())),
+        TurnItem::AgentMessage(message) => {
+            let mut text = String::new();
+            for entry in &message.content {
+                let AgentMessageContent::Text { text: chunk } = entry;
+                text.push_str(chunk);
+            }
+            Some((GroupChatSender::TeamLead, text))
+        }
+        _ => None,
+    }
+}
+
+fn format_group_chat_display_text(text: &str, mentions: &[ThreadId]) -> String {
+    if mentions.is_empty() {
+        return text.to_string();
+    }
+    let labels = mentions
+        .iter()
+        .map(|id| short_thread_id(*id))
+        .collect::<Vec<_>>();
+    let mention_label = if labels.len() == 1 {
+        let first = &labels[0];
+        format!("subagent {first}")
+    } else {
+        let joined = labels.join(", ");
+        format!("subagents [{joined}]")
+    };
+    format!("To {mention_label}: {text}")
+}
+
+fn parse_group_chat_mention_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    tokens.extend(parse_at_mentions(text));
+    tokens.extend(parse_explicit_subagent_mentions(text));
+    tokens
+}
+
+fn parse_at_mentions(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] != b'@' {
+            idx += 1;
+            continue;
+        }
+        let start = idx + 1;
+        let mut end = start;
+        while end < bytes.len() && is_mention_char(bytes[end]) {
+            end += 1;
+        }
+        if end > start {
+            let token = &text[start..end];
+            tokens.push(token.to_string());
+        }
+        idx = end;
+    }
+    tokens
+}
+
+fn parse_explicit_subagent_mentions(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(SUBAGENT_MESSAGE_PREFIX) {
+        let after_prefix = &rest[start + SUBAGENT_MESSAGE_PREFIX.len()..];
+        let Some(end) = after_prefix.find(SUBAGENT_MESSAGE_SUFFIX) else {
+            break;
+        };
+        let token = after_prefix[..end].trim();
+        if !token.is_empty() {
+            tokens.push(token.to_string());
+        }
+        rest = &after_prefix[end + SUBAGENT_MESSAGE_SUFFIX.len()..];
+    }
+    tokens
+}
+
+fn is_mention_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+}
+
+fn normalize_mention_key(token: &str) -> String {
+    token.trim().to_ascii_lowercase()
+}
+
+fn build_subagent_aliases(subagents: &[SubagentSummary]) -> HashMap<String, Option<ThreadId>> {
+    let mut aliases = HashMap::new();
+    for subagent in subagents {
+        let id = subagent.id;
+        insert_alias(&mut aliases, id.to_string().to_ascii_lowercase(), id);
+        insert_alias(&mut aliases, short_thread_id(id).to_ascii_lowercase(), id);
+        if let Some(persona) = subagent.persona.as_deref().and_then(short_persona_label) {
+            insert_alias(&mut aliases, persona.to_ascii_lowercase(), id);
+        }
+    }
+    aliases
+}
+
+fn insert_alias(aliases: &mut HashMap<String, Option<ThreadId>>, key: String, id: ThreadId) {
+    match aliases.get(&key) {
+        None => {
+            aliases.insert(key, Some(id));
+        }
+        Some(Some(existing)) if *existing == id => {}
+        _ => {
+            aliases.insert(key, None);
+        }
+    }
+}
+
+fn sorted_thread_ids(mentions: HashSet<ThreadId>) -> Vec<ThreadId> {
+    let mut list = mentions.into_iter().collect::<Vec<_>>();
+    list.sort_by_key(std::string::ToString::to_string);
+    list
+}
+
+fn format_group_chat_history_text(
+    sender: &GroupChatSender,
+    text: &str,
+    mentions: &[ThreadId],
+) -> String {
+    match sender {
+        GroupChatSender::SubAgent { id, .. } => {
+            format!("{SUBAGENT_MESSAGE_PREFIX}{id}{SUBAGENT_MESSAGE_SUFFIX} {text}")
+        }
+        GroupChatSender::Human if !mentions.is_empty() => {
+            let mentions_text = mentions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("To subagents [{mentions_text}]: {text}")
+        }
+        _ => text.to_string(),
+    }
+}
+
+fn format_group_chat_prompt(messages: &[GroupChatMessageEvent]) -> String {
+    let mut output = String::from("Unread group chat messages:\n");
+    for message in messages {
+        let label = group_chat_sender_label(&message.sender);
+        let text = message.text.as_str();
+        output.push_str(&format!("[{label}] {text}\n"));
+    }
+    output.push_str("\nPost your final response to the group chat.");
+    output
+}
+
+fn group_chat_sender_label(sender: &GroupChatSender) -> String {
+    match sender {
+        GroupChatSender::Human => "human".to_string(),
+        GroupChatSender::TeamLead => "team lead".to_string(),
+        GroupChatSender::SubAgent { id, persona } => {
+            let short_id = short_thread_id(*id);
+            if let Some(persona) = persona.as_deref().and_then(short_persona_label) {
+                format!("{persona} (subagent {short_id})")
+            } else {
+                format!("subagent {short_id}")
+            }
+        }
+    }
+}
+
+fn short_thread_id(thread_id: ThreadId) -> String {
+    let full = thread_id.to_string();
+    full.split('-').next().unwrap_or(full.as_str()).to_string()
+}
+
+fn short_persona_label(persona: &str) -> Option<String> {
+    let trimmed = persona.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    }
+}
+
 /// Operation handlers
 mod handlers {
     use crate::codex::Session;
@@ -1797,11 +2253,13 @@ mod handlers {
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
+    use codex_protocol::ThreadId;
     use codex_protocol::custom_prompts::CustomPrompt;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::GroupChatSender;
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::ListSkillsResponseEvent;
     use codex_protocol::protocol::Op;
@@ -1994,6 +2452,17 @@ mod handlers {
                 warn!("failed to append to message history: {e}");
             }
         });
+    }
+
+    pub async fn group_chat_message(
+        sess: &Arc<Session>,
+        sub_id: String,
+        text: String,
+        mentions: Vec<ThreadId>,
+        sender: GroupChatSender,
+    ) {
+        sess.process_group_chat_message(sub_id, text, mentions, sender)
+            .await;
     }
 
     pub async fn get_history_entry_request(
@@ -2264,6 +2733,7 @@ async fn spawn_review_thread(
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
+        tool_policy: &config.tool_policy,
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();

@@ -1,3 +1,9 @@
 # Non-interactive mode
 
-For information about non-interactive mode, see [this documentation](https://developers.openai.com/codex/noninteractive).
+Use `codex exec` to run Kaabil Codex non-interactively:
+
+```bash
+codex exec "Summarize this repository"
+```
+
+You can also pipe the prompt via `stdin`. Run `codex exec --help` for flags.

@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
-DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
+DEFAULT_WORKFLOW_URL = ""
 VENDOR_DIR_NAME = "vendor"
 RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
 BINARY_TARGETS = (
@@ -123,10 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install native Codex binaries.")
     parser.add_argument(
         "--workflow-url",
-        help=(
-            "GitHub Actions workflow URL that produced the artifacts. Defaults to a "
-            "known good run when omitted."
-        ),
+        help="GitHub Actions workflow URL that produced the artifacts.",
     )
     parser.add_argument(
         "--component",
@@ -167,7 +164,7 @@ def main() -> int:
 
     workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
     if not workflow_url:
-        workflow_url = DEFAULT_WORKFLOW_URL
+        raise SystemExit("Missing --workflow-url for native artifact download.")
 
     workflow_id = workflow_url.rstrip("/").split("/")[-1]
     print(f"Downloading native artifacts from workflow {workflow_id}...")
@@ -267,7 +264,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        "shrey16/kaabil-codex",
         workflow_id,
     ]
     subprocess.check_call(cmd)

@@ -412,6 +412,8 @@ async fn make_chatwidget_manual(
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
         current_status_header: String::from("Working"),
+        current_status_details: None,
+        subagent_status_details: None,
         retry_status_header: None,
         thread_id: None,
         frame_requester: FrameRequester::test_dummy(),

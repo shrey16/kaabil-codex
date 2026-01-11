@@ -76,6 +76,7 @@ pub(crate) struct BottomPane {
 
     has_input_focus: bool,
     is_task_running: bool,
+    has_subagent_activity: bool,
     ctrl_c_quit_hint: bool,
     esc_backtrack_hint: bool,
     animations_enabled: bool,
@@ -129,6 +130,7 @@ impl BottomPane {
             frame_requester,
             has_input_focus,
             is_task_running: false,
+            has_subagent_activity: false,
             ctrl_c_quit_hint: false,
             status: None,
             unified_exec_footer: UnifiedExecFooter::new(),
@@ -371,8 +373,26 @@ impl BottomPane {
                 }
                 self.request_redraw();
             }
+        } else if self.has_subagent_activity {
+            self.ensure_status_indicator();
+            self.set_interrupt_hint_visible(false);
         } else {
             // Hide the status indicator when a task completes, but keep other modal views.
+            self.hide_status_indicator();
+        }
+    }
+
+    pub(crate) fn set_subagent_activity(&mut self, active: bool) {
+        if self.has_subagent_activity == active {
+            return;
+        }
+        self.has_subagent_activity = active;
+        if active {
+            self.ensure_status_indicator();
+            if !self.is_task_running {
+                self.set_interrupt_hint_visible(false);
+            }
+        } else if !self.is_task_running {
             self.hide_status_indicator();
         }
     }

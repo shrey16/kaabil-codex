@@ -34,6 +34,7 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
 use codex_core::protocol::ExitedReviewModeEvent;
+use codex_core::protocol::GroupChatMessageEvent;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::ListSkillsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
@@ -68,6 +69,8 @@ use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::SUBAGENT_MESSAGE_PREFIX;
+use codex_protocol::protocol::SUBAGENT_MESSAGE_SUFFIX;
 use codex_protocol::user_input::UserInput;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -350,6 +353,8 @@ pub(crate) struct ChatWidget {
     full_reasoning_buffer: String,
     // Current status header shown in the status indicator.
     current_status_header: String,
+    current_status_details: Option<String>,
+    subagent_status_details: Option<String>,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     thread_id: Option<ThreadId>,
@@ -409,6 +414,74 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
     }
 }
 
+fn is_subagent_message(message: &str) -> bool {
+    parse_subagent_message(message).is_some()
+}
+
+fn parse_subagent_message(message: &str) -> Option<(ThreadId, String)> {
+    let trimmed = message.trim_start();
+    if !trimmed.starts_with(SUBAGENT_MESSAGE_PREFIX) {
+        return None;
+    }
+    let rest = trimmed.strip_prefix(SUBAGENT_MESSAGE_PREFIX)?;
+    let end = rest.find(SUBAGENT_MESSAGE_SUFFIX)?;
+    let id = rest[..end].trim();
+    let agent_id = ThreadId::from_string(id).ok()?;
+    let body = rest[end + SUBAGENT_MESSAGE_SUFFIX.len()..].trim_start();
+    if body.is_empty() {
+        return None;
+    }
+    Some((agent_id, body.to_string()))
+}
+
+fn format_subagent_summary(summaries: &[AgentSummary]) -> Option<String> {
+    if summaries.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for summary in summaries {
+        let label = format_subagent_label(summary);
+        let status = subagent_status_label(&summary.status);
+        parts.push(format!("{label} {status}"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    Some(format!("Subagents: {}", parts.join(", ")))
+}
+
+fn format_subagent_label(summary: &AgentSummary) -> String {
+    let short_id = ChatWidget::short_thread_id(summary.thread_id);
+    if let Some(persona) = summary.persona.as_deref().and_then(short_persona_label) {
+        return format!("{persona} ({short_id})");
+    }
+    short_id
+}
+
+fn subagent_status_label(status: &AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::PendingInit => "pending",
+        AgentStatus::Running => "running",
+        AgentStatus::Completed(_) => "idle",
+        AgentStatus::Errored(_) => "errored",
+        AgentStatus::Shutdown | AgentStatus::NotFound => "offline",
+    }
+}
+
+fn short_persona_label(persona: &str) -> Option<String> {
+    let trimmed = persona.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    }
+}
+
 impl ChatWidget {
     fn flush_answer_stream_with_separator(&mut self) {
         if let Some(mut controller) = self.stream_controller.take()
@@ -422,8 +495,28 @@ impl ChatWidget {
     ///
     /// Passing `None` clears any existing details.
     fn set_status(&mut self, header: String, details: Option<String>) {
-        self.current_status_header = header.clone();
-        self.bottom_pane.update_status(header, details);
+        self.current_status_header = header;
+        self.current_status_details = details;
+        self.sync_status_details();
+    }
+
+    fn set_subagent_status_details(&mut self, details: Option<String>) {
+        if self.subagent_status_details == details {
+            return;
+        }
+        self.subagent_status_details = details;
+        self.sync_status_details();
+    }
+
+    fn sync_status_details(&mut self) {
+        let combined = match (&self.current_status_details, &self.subagent_status_details) {
+            (Some(primary), Some(extra)) => Some(format!("{primary}\n{extra}")),
+            (Some(primary), None) => Some(primary.clone()),
+            (None, Some(extra)) => Some(extra.clone()),
+            (None, None) => None,
+        };
+        self.bottom_pane
+            .update_status(self.current_status_header.clone(), combined);
     }
 
     /// Convenience wrapper around [`Self::set_status`];
@@ -1470,6 +1563,8 @@ impl ChatWidget {
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
+            current_status_details: None,
+            subagent_status_details: None,
             retry_status_header: None,
             thread_id: None,
             queued_user_messages: VecDeque::new(),
@@ -1556,6 +1651,8 @@ impl ChatWidget {
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
+            current_status_details: None,
+            subagent_status_details: None,
             retry_status_header: None,
             thread_id: None,
             queued_user_messages: VecDeque::new(),
@@ -2048,7 +2145,7 @@ impl ChatWidget {
         }
 
         // Only show the text portion in conversation history.
-        if !text.is_empty() {
+        if !text.is_empty() && !self.config.features.enabled(Feature::AgentOrchestration) {
             self.add_to_history(history_cell::new_user_prompt(text));
         }
         self.needs_final_message_separator = false;
@@ -2097,9 +2194,15 @@ impl ChatWidget {
 
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
-            EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
+            EventMsg::AgentMessage(AgentMessageEvent { message }) => {
+                if !self.config.features.enabled(Feature::AgentOrchestration) {
+                    self.on_agent_message(message);
+                }
+            }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
-                self.on_agent_message_delta(delta)
+                if !self.config.features.enabled(Feature::AgentOrchestration) {
+                    self.on_agent_message_delta(delta);
+                }
             }
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
@@ -2172,6 +2275,7 @@ impl ChatWidget {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 self.on_background_event(message)
             }
+            EventMsg::GroupChatMessage(ev) => self.on_group_chat_message(ev),
             EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
             EventMsg::StreamError(StreamErrorEvent {
@@ -2180,7 +2284,7 @@ impl ChatWidget {
                 ..
             }) => self.on_stream_error(message, additional_details),
             EventMsg::UserMessage(ev) => {
-                if from_replay {
+                if from_replay || is_subagent_message(ev.message.as_str()) {
                     self.on_user_message_event(ev);
                 }
             }
@@ -2251,8 +2355,44 @@ impl ChatWidget {
     fn on_user_message_event(&mut self, event: UserMessageEvent) {
         let message = event.message.trim();
         if !message.is_empty() {
-            self.add_to_history(history_cell::new_user_prompt(message.to_string()));
+            if let Some((agent_id, body)) = parse_subagent_message(message) {
+                self.add_to_history(history_cell::new_subagent_prompt(agent_id, body));
+            } else {
+                self.add_to_history(history_cell::new_user_prompt(message.to_string()));
+            }
         }
+    }
+
+    fn on_group_chat_message(&mut self, event: GroupChatMessageEvent) {
+        if !event.display {
+            return;
+        }
+        let message = event.text.trim();
+        if message.is_empty() {
+            return;
+        }
+        self.add_to_history(history_cell::new_group_chat_message(
+            event.sender,
+            message.to_string(),
+        ));
+    }
+
+    pub(crate) fn update_subagent_statuses(&mut self, summaries: Vec<AgentSummary>) {
+        let details = format_subagent_summary(&summaries);
+        let has_activity = summaries.iter().any(|summary| {
+            matches!(
+                summary.status,
+                AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Errored(_)
+            )
+        });
+        self.bottom_pane.set_subagent_activity(has_activity);
+        if has_activity
+            && !self.bottom_pane.is_task_running()
+            && self.current_status_header != "Subagents"
+        {
+            self.set_status_header("Subagents".to_string());
+        }
+        self.set_subagent_status_details(details);
     }
 
     fn request_exit(&self) {
@@ -3028,19 +3168,20 @@ impl ChatWidget {
             });
         });
         items.push(SelectionItem {
-            name: "New agent".to_string(),
-            description: Some("Spawn a background agent and send an initial prompt.".to_string()),
+            name: "New subagent".to_string(),
+            description: Some("Spawn a subagent and send an initial prompt.".to_string()),
             actions: vec![new_agent_action],
             dismiss_on_select: true,
-            search_value: Some("new agent spawn".to_string()),
+            search_value: Some("new subagent spawn".to_string()),
             ..Default::default()
         });
 
         for agent in agents {
             let thread_id = agent.thread_id;
-            let short_id = Self::short_thread_id(thread_id);
+            let subagent_label = format_subagent_label(&agent);
             let status_text = Self::agent_status_description(&agent.status);
-            let search_value = format!("{thread_id} {status_text}");
+            let persona_search = agent.persona.clone().unwrap_or_default();
+            let search_value = format!("{thread_id} {persona_search} {status_text}");
             let disabled_reason = if agent.is_current {
                 Some("use the main composer".to_string())
             } else if matches!(agent.status, AgentStatus::NotFound) {
@@ -3054,7 +3195,7 @@ impl ChatWidget {
                 });
             });
             items.push(SelectionItem {
-                name: format!("Agent {short_id}"),
+                name: format!("Subagent {subagent_label}"),
                 description: Some(status_text),
                 is_current: agent.is_current,
                 actions: vec![open_action],
@@ -3066,12 +3207,12 @@ impl ChatWidget {
         }
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Agents".to_string()),
-            subtitle: Some("Select an agent to send a message.".to_string()),
+            title: Some("Subagents".to_string()),
+            subtitle: Some("Select a subagent to send a message.".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             is_searchable: true,
-            search_placeholder: Some("Filter agents by id or status".to_string()),
+            search_placeholder: Some("Filter subagents by id, persona, or status".to_string()),
             header: Box::new(()),
             ..Default::default()
         });
@@ -3081,14 +3222,14 @@ impl ChatWidget {
     pub(crate) fn open_agent_prompt(&mut self, target: AgentPromptTarget) {
         let (title, placeholder, context_label) = match target {
             AgentPromptTarget::NewAgent => (
-                "Spawn new agent".to_string(),
-                "Type the initial prompt for the new agent.".to_string(),
+                "Spawn new subagent".to_string(),
+                "Type the initial prompt for the new subagent.".to_string(),
                 None,
             ),
             AgentPromptTarget::Existing(thread_id) => (
-                format!("Message agent {}", Self::short_thread_id(thread_id)),
-                "Type a message for this agent.".to_string(),
-                Some(format!("Agent ID: {thread_id}")),
+                format!("Message subagent {}", Self::short_thread_id(thread_id)),
+                "Type a message for this subagent.".to_string(),
+                Some(format!("Subagent ID: {thread_id}")),
             ),
         };
         let app_event_tx = self.app_event_tx.clone();
@@ -3382,7 +3523,7 @@ impl ChatWidget {
             header.push(*Box::new(
                 Paragraph::new(vec![
                     line!["Agent mode on Windows uses an experimental sandbox to limit network and filesystem access.".bold()],
-                    line!["Learn more: https://developers.openai.com/codex/windows"],
+                    line!["Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"],
                 ])
                 .wrap(Wrap { trim: false }),
             ));
@@ -3454,7 +3595,7 @@ impl ChatWidget {
                 line!["Set Up Agent Sandbox".bold()],
                 line![""],
                 line!["Agent mode uses an experimental Windows sandbox that protects your files and prevents network access by default."],
-                line!["Learn more: https://developers.openai.com/codex/windows"],
+                line!["Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"],
             ])
             .wrap(Wrap { trim: false }),
         ));
@@ -3535,7 +3676,7 @@ impl ChatWidget {
             "Elevation failed. You can also use a non-elevated sandbox, which protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected."
         ]);
         lines.push(line![
-            "Learn more: https://developers.openai.com/codex/windows"
+            "Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"
         ]);
 
         let mut header = ColumnRenderable::new();

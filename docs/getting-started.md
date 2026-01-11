@@ -1,3 +1,10 @@
-# Getting started with Codex CLI
+# Getting started with Kaabil Codex CLI
 
-For an overview of Codex CLI features, see [this documentation](https://developers.openai.com/codex/cli/features#running-in-interactive-mode).
+Start with `README.md` and `docs/install.md` for setup, then try:
+
+```bash
+codex --help
+codex "summarize this repository"
+```
+
+For configuration details, see `docs/config.md`.

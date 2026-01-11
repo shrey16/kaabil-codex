@@ -39,6 +39,7 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
     match ev {
         EventMsg::UserMessage(_)
         | EventMsg::AgentMessage(_)
+        | EventMsg::GroupChatMessage(_)
         | EventMsg::AgentReasoning(_)
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::TokenCount(_)

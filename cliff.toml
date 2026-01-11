@@ -4,7 +4,7 @@
 header = """
 # Changelog
 
-You can install any of these versions: `npm install -g @openai/codex@<version>`
+You can install any of these versions by checking out the tag and running `cargo install --path codex-rs/cli --locked`.
 """
 
 body = """

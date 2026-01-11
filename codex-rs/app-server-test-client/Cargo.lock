@@ -156,7 +156,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 [[package]]
 name = "codex-app-server-protocol"
 version = "0.45.0"
-source = "git+https://github.com/openai/codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
+source = "git+https://github.com/shrey16/kaabil-codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
 dependencies = [
  "codex-protocol",
  "paste",
@@ -170,7 +170,7 @@ dependencies = [
 [[package]]
 name = "codex-protocol"
 version = "0.45.0"
-source = "git+https://github.com/openai/codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
+source = "git+https://github.com/shrey16/kaabil-codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
 dependencies = [
  "base64",
  "icu_decimal",
@@ -524,7 +524,7 @@ checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 [[package]]
 name = "mcp-types"
 version = "0.45.0"
-source = "git+https://github.com/openai/codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
+source = "git+https://github.com/shrey16/kaabil-codex.git?tag=rust-v0.45.0#a7c7869c23f88f6c468281e6f438ba4a91b81f26"
 dependencies = [
  "serde",
  "serde_json",

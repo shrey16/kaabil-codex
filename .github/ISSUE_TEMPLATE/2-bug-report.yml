@@ -7,18 +7,18 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for submitting a bug report! It helps make Codex better for everyone.
+        Thank you for submitting a bug report! It helps make Kaabil Codex better.
 
-        If you need help or support using Codex, and are not reporting a bug, please post on [codex/discussions](https://github.com/openai/codex/discussions), where you can ask questions or engage with others on ideas for how to improve codex.
+        If you need help or support using Kaabil Codex and are not reporting a bug, please open an issue in this repo.
 
-        Make sure you are running the [latest](https://npmjs.com/package/@openai/codex) version of Codex CLI. The bug you are experiencing may already have been fixed.
+        Make sure you are running the latest Kaabil Codex build. The bug you are experiencing may already have been fixed.
 
         Please try to include as much information as possible.
 
   - type: input
     id: version
     attributes:
-      label: What version of Codex is running?
+      label: What version of Kaabil Codex is running?
       description: Copy the output of `codex --version`
     validations:
       required: true

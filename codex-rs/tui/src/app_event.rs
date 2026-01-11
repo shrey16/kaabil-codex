@@ -41,6 +41,7 @@ pub(crate) struct AgentSummary {
     pub(crate) thread_id: ThreadId,
     pub(crate) status: AgentStatus,
     pub(crate) is_current: bool,
+    pub(crate) persona: Option<String>,
 }
 
 #[allow(clippy::large_enum_variant)]

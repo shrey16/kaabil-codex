@@ -50,6 +50,8 @@ pub const USER_INSTRUCTIONS_CLOSE_TAG: &str = "</user_instructions>";
 pub const ENVIRONMENT_CONTEXT_OPEN_TAG: &str = "<environment_context>";
 pub const ENVIRONMENT_CONTEXT_CLOSE_TAG: &str = "</environment_context>";
 pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
+pub const SUBAGENT_MESSAGE_PREFIX: &str = "[[subagent:";
+pub const SUBAGENT_MESSAGE_SUFFIX: &str = "]]";
 
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -177,6 +179,17 @@ pub enum Op {
     AddToHistory {
         /// The message text to be stored.
         text: String,
+    },
+
+    /// Append a message to the group chat and optionally ping subagents.
+    GroupChatMessage {
+        /// Message to append to the group chat.
+        text: String,
+        /// Subagents to notify when this message is posted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<ThreadId>,
+        /// Sender metadata for the group chat message.
+        sender: GroupChatSender,
     },
 
     /// Request a single history entry identified by `log_id` + `offset`.
@@ -570,6 +583,9 @@ pub enum EventMsg {
     /// User/system input message (what was sent to the model)
     UserMessage(UserMessageEvent),
 
+    /// Group chat message from a human, team lead, or subagent.
+    GroupChatMessage(GroupChatMessageEvent),
+
     /// Agent text output delta message
     AgentMessageDelta(AgentMessageDeltaEvent),
 
@@ -849,7 +865,7 @@ impl HasLegacyEvent for EventMsg {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
 }
@@ -1095,6 +1111,27 @@ impl fmt::Display for FinalOutput {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentMessageEvent {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GroupChatSender {
+    Human,
+    TeamLead,
+    SubAgent {
+        id: ThreadId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        persona: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct GroupChatMessageEvent {
+    pub sender: GroupChatSender,
+    pub text: String,
+    #[serde(default)]
+    pub display: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

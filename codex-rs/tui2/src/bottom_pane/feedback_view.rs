@@ -28,7 +28,7 @@ use super::textarea::TextArea;
 use super::textarea::TextAreaState;
 
 const BASE_BUG_ISSUE_URL: &str =
-    "https://github.com/openai/codex/issues/new?template=2-bug-report.yml";
+    "https://github.com/shrey16/kaabil-codex/issues/new?template=2-bug-report.yml";
 
 /// Minimal input overlay to collect an optional feedback note, then upload
 /// both logs and rollout with classification + metadata.

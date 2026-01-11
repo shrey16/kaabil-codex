@@ -3,13 +3,14 @@ source: tui/src/model_migration.rs
 expression: terminal.backend()
 ---
 
-> Codex just got an upgrade. Introducing gpt-5.1-codex-max.
+> Kaabil Codex just got an upgrade. Introducing gpt-5.1-code
 
   We recommend switching from gpt-5-codex to
   gpt-5.1-codex-max.
 
   Codex-optimized flagship for deep and fast reasoning.
   Learn more about gpt-5.1-codex-max at
-  https://www.codex.com/models/gpt-5.1-codex-max
+  https://github.com/shrey16/kaabil-codex/blob/main/docs/mod
+  els.md#gpt-5-1-codex-max
 
   Press enter to continue

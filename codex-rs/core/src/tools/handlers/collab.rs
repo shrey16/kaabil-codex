@@ -1,5 +1,5 @@
 use crate::codex::TurnContext;
-use crate::config::Config;
+use crate::config::types::ToolPolicyToml;
 use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
@@ -11,7 +11,11 @@ use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::GroupChatSender;
+use codex_protocol::protocol::SessionSource;
 use serde::Deserialize;
+use serde::Serialize;
+use std::sync::Arc;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -25,6 +29,10 @@ pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
 struct SpawnAgentArgs {
     message: String,
     persona: Option<String>,
+    tool_allowlist: Option<Vec<String>>,
+    tool_denylist: Option<Vec<String>>,
+    shell_command_allowlist: Option<Vec<String>>,
+    shell_command_denylist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +50,26 @@ struct WaitArgs {
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
     id: String,
+    timeout_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListAgentsArgs {}
+
+#[derive(Debug, Deserialize)]
+struct AgentOutputArgs {
+    id: String,
+    max_chars: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentOutputResponse {
+    id: ThreadId,
+    status: AgentStatus,
+    partial: Option<String>,
+    last_message: Option<String>,
+    reasoning: Option<String>,
+    tool_events: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -74,9 +102,11 @@ impl ToolHandler for CollabHandler {
 
         match tool_name.as_str() {
             "spawn_agent" => handle_spawn_agent(session, turn, arguments).await,
-            "send_input" => handle_send_input(session, arguments).await,
+            "send_input" => handle_send_input(session, turn, arguments).await,
             "wait" => handle_wait(session, arguments).await,
-            "close_agent" => handle_close_agent(arguments).await,
+            "close_agent" => handle_close_agent(session, arguments).await,
+            "list_agents" => handle_list_agents(session, arguments).await,
+            "agent_output" => handle_agent_output(session, arguments).await,
             other => Err(FunctionCallError::RespondToModel(format!(
                 "unsupported collab tool {other}"
             ))),
@@ -95,17 +125,32 @@ async fn handle_spawn_agent(
             "Empty message can't be send to an agent".to_string(),
         ));
     }
-    let mut config = build_agent_spawn_config(turn.as_ref())?;
+    let SpawnAgentArgs {
+        message,
+        persona,
+        tool_allowlist,
+        tool_denylist,
+        shell_command_allowlist,
+        shell_command_denylist,
+    } = args;
+    let mut config = crate::agent::build_agent_spawn_config(turn.as_ref())
+        .map_err(FunctionCallError::RespondToModel)?;
     let orchestrator_id = session.conversation_id();
     config.developer_instructions = crate::agent_personas::with_subagent_instructions(
         config.developer_instructions.as_deref(),
-        args.persona.as_deref(),
+        persona.as_deref(),
         orchestrator_id,
     );
+    config.tool_policy.apply_overrides(ToolPolicyToml {
+        tool_allowlist,
+        tool_denylist,
+        shell_command_allowlist,
+        shell_command_denylist,
+    });
     let result = session
         .services
         .agent_control
-        .spawn_agent(config, args.message, true)
+        .spawn_agent(orchestrator_id, config, message, true, persona)
         .await
         .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
 
@@ -118,29 +163,74 @@ async fn handle_spawn_agent(
 
 async fn handle_send_input(
     session: std::sync::Arc<crate::codex::Session>,
+    turn: std::sync::Arc<TurnContext>,
     arguments: String,
 ) -> Result<ToolOutput, FunctionCallError> {
     let args: SendInputArgs = parse_arguments(&arguments)?;
-    let agent_id = agent_id(&args.id)?;
-    if args.message.trim().is_empty() {
+    let message = args.message;
+    if message.trim().is_empty() {
         return Err(FunctionCallError::RespondToModel(
             "Empty message can't be send to an agent".to_string(),
         ));
     }
-    let content = session
-        .services
-        .agent_control
-        .send_prompt(agent_id, args.message)
-        .await
-        .map_err(|err| match err {
-            CodexErr::ThreadNotFound(id) => {
-                FunctionCallError::RespondToModel(format!("agent with id {id} not found"))
-            }
-            err => FunctionCallError::Fatal(err.to_string()),
-        })?;
+    let target_id = agent_id(&args.id)?;
+    if matches!(turn.client.get_session_source(), SessionSource::SubAgent(_)) {
+        let subagent_id = session.conversation_id();
+        let is_parent = session
+            .services
+            .agent_control
+            .is_subagent_of(target_id, subagent_id)
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        if !is_parent {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "agent with id {target_id} not found"
+            )));
+        }
+        let persona = session
+            .services
+            .agent_control
+            .subagent_persona(subagent_id)
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        session
+            .services
+            .agent_control
+            .post_group_chat_message(
+                target_id,
+                message,
+                GroupChatSender::SubAgent {
+                    id: subagent_id,
+                    persona,
+                },
+            )
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    } else {
+        let parent_id = session.conversation_id();
+        let is_subagent = session
+            .services
+            .agent_control
+            .is_subagent_of(parent_id, target_id)
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        if !is_subagent {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "agent with id {target_id} not found"
+            )));
+        }
+        session
+            .process_group_chat_message(
+                turn.sub_id.clone(),
+                message,
+                vec![target_id],
+                GroupChatSender::TeamLead,
+            )
+            .await;
+    }
 
     Ok(ToolOutput::Function {
-        content,
+        content: "ok".to_string(),
         success: Some(true),
         content_items: None,
     })
@@ -152,25 +242,137 @@ async fn handle_wait(
 ) -> Result<ToolOutput, FunctionCallError> {
     let args: WaitArgs = parse_arguments(&arguments)?;
     let agent_id = agent_id(&args.id)?;
+    let timeout_ms = resolve_timeout_ms(args.timeout_ms)?;
+    let status = wait_for_agent(session, agent_id, timeout_ms).await?;
+    Ok(ToolOutput::Function {
+        content: status_payload(&status),
+        success: Some(true),
+        content_items: None,
+    })
+}
 
-    let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
-    if timeout_ms <= 0 {
+fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
+    ThreadId::from_string(id)
+        .map_err(|e| FunctionCallError::RespondToModel(format!("invalid agent id {id}: {e:?}")))
+}
+
+async fn handle_close_agent(
+    session: std::sync::Arc<crate::codex::Session>,
+    arguments: String,
+) -> Result<ToolOutput, FunctionCallError> {
+    let args: CloseAgentArgs = parse_arguments(&arguments)?;
+    let agent_id = agent_id(&args.id)?;
+    let parent_id = session.conversation_id();
+    let is_subagent = session
+        .services
+        .agent_control
+        .is_subagent_of(parent_id, agent_id)
+        .await
+        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    if !is_subagent {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "agent with id {agent_id} not found"
+        )));
+    }
+    session
+        .services
+        .agent_control
+        .shutdown_agent(agent_id)
+        .await
+        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    let timeout_ms = resolve_timeout_ms(args.timeout_ms)?;
+    let status = wait_for_agent(Arc::clone(&session), agent_id, timeout_ms).await?;
+    session
+        .services
+        .agent_control
+        .forget_subagent(agent_id)
+        .await
+        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    Ok(ToolOutput::Function {
+        content: status_payload(&status),
+        success: Some(true),
+        content_items: None,
+    })
+}
+
+async fn handle_list_agents(
+    session: std::sync::Arc<crate::codex::Session>,
+    arguments: String,
+) -> Result<ToolOutput, FunctionCallError> {
+    let _args: ListAgentsArgs = parse_arguments(&arguments)?;
+    let parent_id = session.conversation_id();
+    let summaries = session
+        .services
+        .agent_control
+        .list_subagents(parent_id)
+        .await
+        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+    let content = serde_json::to_string(&summaries)
+        .unwrap_or_else(|_| format!("failed to serialize agent list: {summaries:?}"));
+    Ok(ToolOutput::Function {
+        content,
+        success: Some(true),
+        content_items: None,
+    })
+}
+
+async fn handle_agent_output(
+    session: std::sync::Arc<crate::codex::Session>,
+    arguments: String,
+) -> Result<ToolOutput, FunctionCallError> {
+    let args: AgentOutputArgs = parse_arguments(&arguments)?;
+    let agent_id = agent_id(&args.id)?;
+    if matches!(args.max_chars, Some(0)) {
         return Err(FunctionCallError::RespondToModel(
-            "timeout_ms must be greater than zero".to_string(),
+            "max_chars must be greater than zero".to_string(),
         ));
     }
-    let timeout_ms = timeout_ms.min(MAX_WAIT_TIMEOUT_MS) as u64;
+    let parent_id = session.conversation_id();
+    let output = session
+        .services
+        .agent_control
+        .subagent_output(parent_id, agent_id, args.max_chars)
+        .await
+        .map_err(|err| match err {
+            CodexErr::ThreadNotFound(id) => {
+                FunctionCallError::RespondToModel(format!("agent with id {id} not found"))
+            }
+            err => FunctionCallError::Fatal(err.to_string()),
+        })?;
+    let status = session.services.agent_control.get_status(agent_id).await;
+    let tool_events = if output.tool_events.is_empty() {
+        None
+    } else {
+        Some(output.tool_events)
+    };
+    let content = AgentOutputResponse {
+        id: agent_id,
+        status,
+        partial: output.partial,
+        last_message: output.last_message,
+        reasoning: output.reasoning,
+        tool_events,
+    };
+    let content = serde_json::to_string(&content)
+        .unwrap_or_else(|_| format!("failed to serialize agent output: {content:?}"));
+    Ok(ToolOutput::Function {
+        content,
+        success: Some(true),
+        content_items: None,
+    })
+}
+
+async fn wait_for_agent(
+    session: std::sync::Arc<crate::codex::Session>,
+    agent_id: ThreadId,
+    timeout_ms: u64,
+) -> Result<AgentStatus, FunctionCallError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
         let status = session.services.agent_control.get_status(agent_id).await;
         if !matches!(status, AgentStatus::PendingInit | AgentStatus::Running) {
-            let content = serde_json::to_string(&status).unwrap_or_else(|_| format!("{status:?}"));
-            return Ok(ToolOutput::Function {
-                content,
-                success: Some(true),
-                content_items: None,
-            });
+            return Ok(status);
         }
         if Instant::now() >= deadline {
             return Err(FunctionCallError::RespondToModel(format!(
@@ -181,45 +383,16 @@ async fn handle_wait(
     }
 }
 
-async fn handle_close_agent(arguments: String) -> Result<ToolOutput, FunctionCallError> {
-    let args: CloseAgentArgs = parse_arguments(&arguments)?;
-    let _agent_id = agent_id(&args.id)?;
-    // TODO(jif): implement agent shutdown and return the final status.
-    Err(FunctionCallError::Fatal(
-        "close_agent not implemented".to_string(),
-    ))
+fn resolve_timeout_ms(timeout_ms: Option<i64>) -> Result<u64, FunctionCallError> {
+    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+    if timeout_ms <= 0 {
+        return Err(FunctionCallError::RespondToModel(
+            "timeout_ms must be greater than zero".to_string(),
+        ));
+    }
+    Ok(timeout_ms.min(MAX_WAIT_TIMEOUT_MS) as u64)
 }
 
-fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
-    ThreadId::from_string(id)
-        .map_err(|e| FunctionCallError::RespondToModel(format!("invalid agent id {id}: {e:?}")))
-}
-
-fn build_agent_spawn_config(turn: &TurnContext) -> Result<Config, FunctionCallError> {
-    let base_config = turn.client.config();
-    let mut config = (*base_config).clone();
-    config.model = Some(turn.client.get_model());
-    config.model_provider = turn.client.get_provider();
-    config.model_reasoning_effort = turn.client.get_reasoning_effort();
-    config.model_reasoning_summary = turn.client.get_reasoning_summary();
-    config.developer_instructions = turn.developer_instructions.clone();
-    config.base_instructions = turn.base_instructions.clone();
-    config.compact_prompt = turn.compact_prompt.clone();
-    config.user_instructions = turn.user_instructions.clone();
-    config.shell_environment_policy = turn.shell_environment_policy.clone();
-    config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
-    config.cwd = turn.cwd.clone();
-    config
-        .approval_policy
-        .set(turn.approval_policy)
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("approval_policy is invalid: {err}"))
-        })?;
-    config
-        .sandbox_policy
-        .set(turn.sandbox_policy.clone())
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("sandbox_policy is invalid: {err}"))
-        })?;
-    Ok(config)
+fn status_payload(status: &AgentStatus) -> String {
+    serde_json::to_string(status).unwrap_or_else(|_| format!("{status:?}"))
 }

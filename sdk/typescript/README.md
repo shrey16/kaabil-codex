@@ -7,7 +7,7 @@ The TypeScript SDK wraps the bundled `codex` binary. It spawns the CLI and excha
 ## Installation
 
 ```bash
-npm install @openai/codex-sdk
+npm install @kaabil/codex-sdk
 ```
 
 Requires Node.js 18+.
@@ -15,7 +15,7 @@ Requires Node.js 18+.
 ## Quickstart
 
 ```typescript
-import { Codex } from "@openai/codex-sdk";
+import { Codex } from "@kaabil/codex-sdk";
 
 const codex = new Codex();
 const thread = codex.startThread();
@@ -97,7 +97,7 @@ const turn = await thread.run([
 
 ### Resuming an existing thread
 
-Threads are persisted in `~/.codex/sessions`. If you lose the in-memory `Thread` object, reconstruct it with `resumeThread()` and keep going.
+Threads are persisted in `~/.kaabil-codex/sessions`. If you lose the in-memory `Thread` object, reconstruct it with `resumeThread()` and keep going.
 
 ```typescript
 const savedThreadId = process.env.CODEX_THREAD_ID!;

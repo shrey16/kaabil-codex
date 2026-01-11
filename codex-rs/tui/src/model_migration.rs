@@ -65,7 +65,7 @@ pub(crate) fn migration_copy_for_models(
     can_opt_out: bool,
 ) -> ModelMigrationCopy {
     let heading_text = Span::from(format!(
-        "Codex just got an upgrade. Introducing {target_display_name}."
+        "Kaabil Codex just got an upgrade. Introducing {target_display_name}."
     ))
     .bold();
     let description_line: Line<'static>;
@@ -293,7 +293,7 @@ impl ModelMigrationScreen {
     fn render_menu(&self, column: &mut ColumnRenderable) {
         column.push(Line::from(""));
         column.push(
-            Paragraph::new("Choose how you'd like Codex to proceed.")
+            Paragraph::new("Choose how you'd like Kaabil Codex to proceed.")
                 .wrap(Wrap { trim: false })
                 .inset(Insets::tlbr(0, 2, 0, 0)),
         );
@@ -404,7 +404,10 @@ mod tests {
             migration_copy_for_models(
                 "gpt-5",
                 "gpt-5.1",
-                Some("https://www.codex.com/models/gpt-5.1".to_string()),
+                Some(
+                    "https://github.com/shrey16/kaabil-codex/blob/main/docs/models.md#gpt-5-1"
+                        .to_string(),
+                ),
                 None,
                 "gpt-5.1".to_string(),
                 Some("Broad world knowledge with strong general reasoning.".to_string()),
@@ -430,7 +433,7 @@ mod tests {
             migration_copy_for_models(
                 "gpt-5-codex",
                 "gpt-5.1-codex-max",
-                Some("https://www.codex.com/models/gpt-5.1-codex-max".to_string()),
+                Some("https://github.com/shrey16/kaabil-codex/blob/main/docs/models.md#gpt-5-1-codex-max".to_string()),
                 None,
                 "gpt-5.1-codex-max".to_string(),
                 Some("Codex-optimized flagship for deep and fast reasoning.".to_string()),
@@ -456,7 +459,7 @@ mod tests {
             migration_copy_for_models(
                 "gpt-5-codex-mini",
                 "gpt-5.1-codex-mini",
-                Some("https://www.codex.com/models/gpt-5.1-codex-mini".to_string()),
+                Some("https://github.com/shrey16/kaabil-codex/blob/main/docs/models.md#gpt-5-1-codex-mini".to_string()),
                 None,
                 "gpt-5.1-codex-mini".to_string(),
                 Some("Optimized for codex. Cheaper, faster, but less capable.".to_string()),
@@ -478,7 +481,7 @@ mod tests {
             migration_copy_for_models(
                 "gpt-old",
                 "gpt-new",
-                Some("https://www.codex.com/models/gpt-new".to_string()),
+                None,
                 None,
                 "gpt-new".to_string(),
                 Some("Latest recommended model for better performance.".to_string()),
@@ -506,7 +509,7 @@ mod tests {
             migration_copy_for_models(
                 "gpt-old",
                 "gpt-new",
-                Some("https://www.codex.com/models/gpt-new".to_string()),
+                None,
                 None,
                 "gpt-new".to_string(),
                 Some("Latest recommended model for better performance.".to_string()),

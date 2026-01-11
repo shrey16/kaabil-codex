@@ -1,3 +1,4 @@
 # Custom prompts
 
-For an overview of custom prompts, see [this documentation](https://developers.openai.com/codex/custom-prompts).
+Custom prompts can be edited in `codex-rs/core/*.md`. For repo-specific guidance,
+add an `AGENTS.md` to the relevant directory.

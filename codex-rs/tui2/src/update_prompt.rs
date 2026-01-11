@@ -205,7 +205,7 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push(
             Line::from(vec![
                 "Release notes: ".dim(),
-                "https://github.com/openai/codex/releases/latest"
+                "https://github.com/shrey16/kaabil-codex/releases/latest"
                     .dim()
                     .underlined(),
             ])

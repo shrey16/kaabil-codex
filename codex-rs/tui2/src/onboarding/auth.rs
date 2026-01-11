@@ -331,7 +331,7 @@ impl AuthModeWidget {
             "  Decide how much autonomy you want to grant Codex".into(),
             Line::from(vec![
                 "  For more details see the ".into(),
-                "\u{1b}]8;;https://github.com/openai/codex\u{7}Codex docs\u{1b}]8;;\u{7}".underlined(),
+                "\u{1b}]8;;https://github.com/shrey16/kaabil-codex\u{7}Codex docs\u{1b}]8;;\u{7}".underlined(),
             ])
             .dim(),
             "".into(),
@@ -388,7 +388,7 @@ impl AuthModeWidget {
         let mut intro_lines: Vec<Line> = vec![
             Line::from(vec![
                 "> ".into(),
-                "Use your own OpenAI API key for usage-based billing".bold(),
+                "Use your own API key for usage-based billing".bold(),
             ]),
             "".into(),
             "  Paste or type your API key below. It will be stored locally in auth.json.".into(),

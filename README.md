@@ -1,68 +1,65 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center"><code>cargo install --path codex-rs/cli --locked</code></p>
+<p align="center"><strong>Kaabil Codex CLI</strong> is an experimental fork of Codex CLI for local development.
 <p align="center">
   <img src="./.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
 </br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+</p>
 
 ---
 
 ## Kaabil fork notice
 
 This is an experimental fork of Codex CLI built and maintained by Kaabil for its own development purposes.
-It is not the official Codex distribution provided by OpenAI. Use at your own risk.
+It is not the official upstream Codex distribution. Use at your own risk.
 
-Versioning follows upstream with a `-kaabil.N` suffix (example: `0.80.0-kaabil.0`).
+Versioning follows upstream with a `-kaabil.N` suffix (example: `0.80.0-kaabil.2`).
 To bump to a newer upstream release, run `./scripts/bump-kaabil-version.sh --upstream <version>`
-or `./scripts/bump-kaabil-version.sh --auto` to fetch the latest npm release.
+or `./scripts/bump-kaabil-version.sh --auto` to fetch the latest upstream tag.
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Local setup (from source)
 
-Install globally with your preferred package manager:
-
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
+This fork is intended for local builds only. A minimal setup looks like:
 
 ```shell
-# Install using Homebrew
-brew install --cask codex
+# Clone
+git clone https://github.com/shrey16/kaabil-codex.git
+cd kaabil-codex
+
+# Build and install the CLI from source
+cargo install --path codex-rs/cli --locked
 ```
 
-Then simply run `codex` to get started.
+If you prefer a `kaabil-codex` command name, add a local alias:
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+```shell
+ln -s ~/.cargo/bin/codex ~/.local/bin/kaabil-codex
+```
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+Ensure `~/.local/bin` is on your `PATH` (or use a different target directory).
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+Create a config at `~/.kaabil-codex/config.toml` (or set `CODEX_HOME`):
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+```toml
+[features]
+agent_orchestration = true
+```
 
-</details>
+To enable MCP tools, add `mcp_servers` entries in the same config file. If you are migrating
+from upstream Codex, copy the `[mcp_servers.*]` blocks from `~/.codex/config.toml`.
 
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+Run `codex` (or `kaabil-codex`) to start a session. Sessions are saved under
+`~/.kaabil-codex/sessions`; `/resume` filters by your current working directory, and
+`codex resume --all` shows every session across projects.
 
 ## Docs
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+- [**Configuration**](./docs/config.md)
+- [**Agent orchestration**](./docs/agent-orchestration.md)
+- [**Models**](./docs/models.md)
+- [**Contributing**](./docs/contributing.md)
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).

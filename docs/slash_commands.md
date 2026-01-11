@@ -1,3 +1,4 @@
 # Slash commands
 
-For an overview of Codex CLI slash commands, see [this documentation](https://developers.openai.com/codex/cli/slash-commands).
+Slash commands are available in the TUI. Type `/help` to list available commands and
+`/` to open the command palette.

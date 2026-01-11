@@ -39,6 +39,32 @@ pub struct NewThread {
     pub session_configured: SessionConfiguredEvent,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentInfo {
+    pub(crate) parent_id: ThreadId,
+    pub(crate) persona: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SubagentOutput {
+    partial: String,
+    last_message: Option<String>,
+    reasoning: String,
+    tool_events: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentOutputSnapshot {
+    pub(crate) partial: Option<String>,
+    pub(crate) last_message: Option<String>,
+    pub(crate) reasoning: Option<String>,
+    pub(crate) tool_events: Vec<String>,
+}
+
+const MAX_SUBAGENT_OUTPUT_CHARS: usize = 8000;
+const MAX_SUBAGENT_REASONING_CHARS: usize = 8000;
+const MAX_SUBAGENT_TOOL_EVENTS: usize = 200;
+
 /// [`ThreadManager`] is responsible for creating threads and maintaining
 /// them in memory.
 pub struct ThreadManager {
@@ -52,6 +78,8 @@ pub struct ThreadManager {
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    subagents: Arc<RwLock<HashMap<ThreadId, SubagentInfo>>>,
+    subagent_outputs: Arc<RwLock<HashMap<ThreadId, SubagentOutput>>>,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
     skills_manager: Arc<SkillsManager>,
@@ -67,6 +95,8 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                subagents: Arc::new(RwLock::new(HashMap::new())),
+                subagent_outputs: Arc::new(RwLock::new(HashMap::new())),
                 models_manager: Arc::new(ModelsManager::new(
                     codex_home.clone(),
                     auth_manager.clone(),
@@ -103,6 +133,8 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                subagents: Arc::new(RwLock::new(HashMap::new())),
+                subagent_outputs: Arc::new(RwLock::new(HashMap::new())),
                 models_manager: Arc::new(ModelsManager::with_provider(
                     codex_home.clone(),
                     auth_manager.clone(),
@@ -136,6 +168,25 @@ impl ThreadManager {
         self.state.threads.read().await.keys().copied().collect()
     }
 
+    pub async fn list_subagent_ids(&self, parent_id: ThreadId) -> Vec<ThreadId> {
+        let mut ids = self
+            .state
+            .subagents_for_parent(parent_id)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        ids.sort_by_key(std::string::ToString::to_string);
+        ids
+    }
+
+    pub async fn subagent_persona(&self, subagent_id: ThreadId) -> Option<String> {
+        self.state
+            .subagent_info(subagent_id)
+            .await
+            .and_then(|info| info.persona)
+    }
+
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         self.state.get_thread(thread_id).await
     }
@@ -148,6 +199,24 @@ impl ThreadManager {
                 Arc::clone(&self.state.auth_manager),
                 self.agent_control(),
             )
+            .await
+    }
+
+    /// Spawn a subagent attached to `parent_id` and send an initial prompt.
+    pub async fn spawn_subagent(
+        &self,
+        parent_id: ThreadId,
+        mut config: Config,
+        prompt: String,
+        persona: Option<String>,
+    ) -> CodexResult<ThreadId> {
+        config.developer_instructions = crate::agent_personas::with_subagent_instructions(
+            config.developer_instructions.as_deref(),
+            persona.as_deref(),
+            parent_id,
+        );
+        self.agent_control()
+            .spawn_agent(parent_id, config, prompt, true, persona)
             .await
     }
 
@@ -177,7 +246,7 @@ impl ThreadManager {
     /// as `Arc<CodexThread>`, it is possible that other references to it exist elsewhere.
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.state.threads.write().await.remove(thread_id)
+        self.state.remove_thread(*thread_id).await
     }
 
     /// Fork an existing thread by taking messages up to the given position (not including
@@ -218,6 +287,11 @@ impl ThreadManagerState {
 
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
         self.get_thread(thread_id).await?.submit(op).await
+    }
+
+    pub(crate) async fn remove_thread(&self, thread_id: ThreadId) -> Option<Arc<CodexThread>> {
+        self.unregister_subagent(thread_id).await;
+        self.threads.write().await.remove(&thread_id)
     }
 
     #[allow(dead_code)] // Used by upcoming multi-agent tooling.
@@ -314,6 +388,192 @@ impl ThreadManagerState {
             session_configured,
         })
     }
+
+    pub(crate) async fn register_subagent(
+        &self,
+        parent_id: ThreadId,
+        subagent_id: ThreadId,
+        persona: Option<String>,
+    ) {
+        self.subagents
+            .write()
+            .await
+            .insert(subagent_id, SubagentInfo { parent_id, persona });
+        self.subagent_outputs
+            .write()
+            .await
+            .entry(subagent_id)
+            .or_insert_with(SubagentOutput::default);
+    }
+
+    pub(crate) async fn unregister_subagent(&self, subagent_id: ThreadId) {
+        self.subagents.write().await.remove(&subagent_id);
+        self.subagent_outputs.write().await.remove(&subagent_id);
+    }
+
+    pub(crate) async fn subagents_for_parent(
+        &self,
+        parent_id: ThreadId,
+    ) -> Vec<(ThreadId, SubagentInfo)> {
+        self.subagents
+            .read()
+            .await
+            .iter()
+            .filter_map(|(id, info)| {
+                if info.parent_id == parent_id {
+                    Some((*id, info.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) async fn subagent_info(&self, subagent_id: ThreadId) -> Option<SubagentInfo> {
+        self.subagents.read().await.get(&subagent_id).cloned()
+    }
+
+    pub(crate) async fn is_subagent_of(&self, parent_id: ThreadId, subagent_id: ThreadId) -> bool {
+        self.subagents
+            .read()
+            .await
+            .get(&subagent_id)
+            .is_some_and(|info| info.parent_id == parent_id)
+    }
+
+    pub(crate) async fn record_subagent_delta(&self, subagent_id: ThreadId, delta: &str) {
+        if let Some(output) = self.subagent_outputs.write().await.get_mut(&subagent_id) {
+            output.push_delta(delta);
+        }
+    }
+
+    pub(crate) async fn record_subagent_message(&self, subagent_id: ThreadId, message: &str) {
+        if let Some(output) = self.subagent_outputs.write().await.get_mut(&subagent_id) {
+            output.set_message(message);
+        }
+    }
+
+    pub(crate) async fn reset_subagent_output(&self, subagent_id: ThreadId) {
+        if let Some(output) = self.subagent_outputs.write().await.get_mut(&subagent_id) {
+            output.reset_for_prompt();
+        }
+    }
+
+    pub(crate) async fn record_subagent_reasoning_delta(&self, subagent_id: ThreadId, delta: &str) {
+        if let Some(output) = self.subagent_outputs.write().await.get_mut(&subagent_id) {
+            output.push_reasoning_delta(delta);
+        }
+    }
+
+    pub(crate) async fn record_subagent_tool_event(&self, subagent_id: ThreadId, event: String) {
+        if let Some(output) = self.subagent_outputs.write().await.get_mut(&subagent_id) {
+            output.push_tool_event(event);
+        }
+    }
+
+    pub(crate) async fn subagent_output_snapshot(
+        &self,
+        subagent_id: ThreadId,
+        max_chars: Option<usize>,
+    ) -> Option<SubagentOutputSnapshot> {
+        self.subagent_outputs
+            .read()
+            .await
+            .get(&subagent_id)
+            .map(|output| output.snapshot(max_chars))
+    }
+}
+
+impl SubagentOutput {
+    fn push_delta(&mut self, delta: &str) {
+        self.partial.push_str(delta);
+        trim_to_max_chars(&mut self.partial, MAX_SUBAGENT_OUTPUT_CHARS);
+    }
+
+    fn push_reasoning_delta(&mut self, delta: &str) {
+        self.reasoning.push_str(delta);
+        trim_to_max_chars(&mut self.reasoning, MAX_SUBAGENT_REASONING_CHARS);
+    }
+
+    fn push_tool_event(&mut self, event: String) {
+        self.tool_events.push(event);
+        if self.tool_events.len() > MAX_SUBAGENT_TOOL_EVENTS {
+            let overflow = self
+                .tool_events
+                .len()
+                .saturating_sub(MAX_SUBAGENT_TOOL_EVENTS);
+            self.tool_events.drain(..overflow);
+        }
+    }
+
+    fn set_message(&mut self, message: &str) {
+        self.last_message = Some(message.to_string());
+        self.partial.clear();
+    }
+
+    fn reset_for_prompt(&mut self) {
+        self.partial.clear();
+        self.reasoning.clear();
+        self.tool_events.clear();
+    }
+
+    fn snapshot(&self, max_chars: Option<usize>) -> SubagentOutputSnapshot {
+        let partial = max_chars
+            .and_then(|limit| trim_snapshot(self.partial.as_str(), limit))
+            .or_else(|| {
+                if self.partial.is_empty() {
+                    None
+                } else {
+                    Some(self.partial.clone())
+                }
+            });
+        let reasoning = max_chars
+            .and_then(|limit| trim_snapshot(self.reasoning.as_str(), limit))
+            .or_else(|| {
+                if self.reasoning.is_empty() {
+                    None
+                } else {
+                    Some(self.reasoning.clone())
+                }
+            });
+        SubagentOutputSnapshot {
+            partial,
+            last_message: self.last_message.clone(),
+            reasoning,
+            tool_events: self.tool_events.clone(),
+        }
+    }
+}
+
+fn trim_to_max_chars(value: &mut String, max_chars: usize) {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return;
+    }
+    let trim_chars = total.saturating_sub(max_chars);
+    let start = value
+        .char_indices()
+        .nth(trim_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    value.drain(..start);
+}
+
+fn trim_snapshot(value: &str, max_chars: usize) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    let total = value.chars().count();
+    if total <= max_chars {
+        return Some(value.to_string());
+    }
+    let trim_chars = total.saturating_sub(max_chars);
+    let start = value
+        .char_indices()
+        .nth(trim_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    Some(value[start..].to_string())
 }
 
 /// Return a prefix of `items` obtained by cutting strictly before the nth user message

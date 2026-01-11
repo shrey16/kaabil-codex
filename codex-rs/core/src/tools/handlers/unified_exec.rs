@@ -119,6 +119,14 @@ impl ToolHandler for UnifiedExecHandler {
         let response = match tool_name.as_str() {
             "exec_command" => {
                 let args: ExecCommandArgs = parse_arguments(&arguments)?;
+                {
+                    let command = args.cmd.as_str();
+                    if !turn.tools_config.tool_policy.shell_command_allowed(command) {
+                        return Err(FunctionCallError::RespondToModel(format!(
+                            "shell command \"{command}\" rejected by tool policy"
+                        )));
+                    }
+                }
                 let process_id = manager.allocate_process_id().await;
                 let command = get_command(&args, session.user_shell());
 

@@ -52,11 +52,11 @@ Clients must send a single `initialize` request before invoking any other method
 
 Applications building on top of `codex app-server` should identify themselves via the `clientInfo` parameter.
 
-**Important**: `clientInfo.name` is used to identify the client for the OpenAI Compliance Logs Platform. If
-you are developing a new Codex integration that is intended for enterprise use, please contact us to get it
-added to a known clients list. For more context: https://chatgpt.com/admin/api-reference#tag/Logs:-Codex
+**Important**: `clientInfo.name` is forwarded to upstream providers and may be used for audit or compliance
+logging depending on the provider. If you are building an enterprise integration, confirm any provider-specific
+requirements.
 
-Example (from OpenAI's official VSCode extension):
+Example (custom client):
 
 ```json
 {
@@ -64,8 +64,8 @@ Example (from OpenAI's official VSCode extension):
   "id": 0,
   "params": {
     "clientInfo": {
-      "name": "codex_vscode",
-      "title": "Codex VS Code Extension",
+      "name": "kaabil_codex_cli",
+      "title": "Kaabil Codex CLI",
       "version": "0.1.0"
     }
   }

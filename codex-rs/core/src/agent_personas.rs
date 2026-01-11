@@ -2,6 +2,27 @@ use codex_protocol::ThreadId;
 pub(crate) const ORCHESTRATOR_PROMPT: &str = include_str!("../orchestrator_prompt.md");
 pub(crate) const SUBAGENT_PROMPT: &str = include_str!("../subagent_prompt.md");
 
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentTemplate {
+    pub(crate) persona: &'static str,
+    pub(crate) initial_message: &'static str,
+}
+
+pub(crate) const DEFAULT_SUBAGENT_TEMPLATES: &[SubagentTemplate] = &[
+    SubagentTemplate {
+        persona: "Planner: break work into steps, flag dependencies, and propose parallel splits.",
+        initial_message: "You are the Planner subagent. Reply \"Ready\" and wait for assignments.",
+    },
+    SubagentTemplate {
+        persona: "Builder: focus on implementation details and concrete code changes.",
+        initial_message: "You are the Builder subagent. Reply \"Ready\" and wait for assignments.",
+    },
+    SubagentTemplate {
+        persona: "Reviewer: focus on correctness, edge cases, and tests.",
+        initial_message: "You are the Reviewer subagent. Reply \"Ready\" and wait for assignments.",
+    },
+];
+
 pub(crate) fn with_orchestrator_instructions(existing: Option<&str>) -> Option<String> {
     merge_instructions(existing, ORCHESTRATOR_PROMPT)
 }

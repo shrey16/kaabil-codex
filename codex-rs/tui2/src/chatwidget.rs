@@ -1971,6 +1971,7 @@ impl ChatWidget {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 self.on_background_event(message)
             }
+            EventMsg::GroupChatMessage(_) => {}
             EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
             EventMsg::StreamError(StreamErrorEvent {
@@ -3001,7 +3002,7 @@ impl ChatWidget {
             header.push(*Box::new(
                 Paragraph::new(vec![
                     line!["Agent mode on Windows uses an experimental sandbox to limit network and filesystem access.".bold()],
-                    line!["Learn more: https://developers.openai.com/codex/windows"],
+                    line!["Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"],
                 ])
                 .wrap(Wrap { trim: false }),
             ));
@@ -3073,7 +3074,7 @@ impl ChatWidget {
                 line!["Set Up Agent Sandbox".bold()],
                 line![""],
                 line!["Agent mode uses an experimental Windows sandbox that protects your files and prevents network access by default."],
-                line!["Learn more: https://developers.openai.com/codex/windows"],
+                line!["Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"],
             ])
             .wrap(Wrap { trim: false }),
         ));
@@ -3154,7 +3155,7 @@ impl ChatWidget {
             "Elevation failed. You can also use a non-elevated sandbox, which protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected."
         ]);
         lines.push(line![
-            "Learn more: https://developers.openai.com/codex/windows"
+            "Learn more: https://github.com/shrey16/kaabil-codex/blob/main/docs/install.md#windows-wsl2"
         ]);
 
         let mut header = ColumnRenderable::new();

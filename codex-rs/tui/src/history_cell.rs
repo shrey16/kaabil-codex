@@ -32,10 +32,12 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::protocol::GroupChatSender;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -309,7 +311,9 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                "https://github.com/shrey16/kaabil-codex"
+                    .cyan()
+                    .underlined(),
                 " for installation options."
             ]
         };
@@ -324,7 +328,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
+            "https://github.com/shrey16/kaabil-codex/releases/latest"
                 .cyan()
                 .underlined(),
         ];
@@ -938,6 +942,109 @@ pub(crate) fn new_user_prompt(message: String) -> UserHistoryCell {
     UserHistoryCell { message }
 }
 
+pub(crate) fn new_group_chat_message(
+    sender: GroupChatSender,
+    message: String,
+) -> GroupChatHistoryCell {
+    GroupChatHistoryCell { sender, message }
+}
+
+pub(crate) fn new_subagent_prompt(agent_id: ThreadId, message: String) -> SubagentHistoryCell {
+    SubagentHistoryCell { agent_id, message }
+}
+
+#[derive(Debug)]
+pub(crate) struct GroupChatHistoryCell {
+    sender: GroupChatSender,
+    message: String,
+}
+
+impl HistoryCell for GroupChatHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let wrap_width = width.saturating_sub(LIVE_PREFIX_COLS + 1).max(1);
+
+        let mut header: Vec<Span<'static>> = vec!["group chat: ".dim()];
+        header.extend(group_chat_sender_spans(&self.sender));
+
+        let mut rendered = Vec::new();
+        append_markdown(&self.message, Some(usize::from(wrap_width)), &mut rendered);
+
+        lines.push(Line::from(""));
+        lines.push(header.into());
+        lines.extend(prefix_lines(rendered, "› ".dim(), "  ".into()));
+        lines.push(Line::from(""));
+        lines
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SubagentHistoryCell {
+    agent_id: ThreadId,
+    message: String,
+}
+
+impl HistoryCell for SubagentHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        let wrap_width = width.saturating_sub(LIVE_PREFIX_COLS + 1).max(1);
+
+        let short_id = short_thread_id(self.agent_id);
+        let header = vec!["subagent ".cyan().bold(), short_id.cyan().bold()];
+
+        let wrapped = word_wrap_lines(
+            self.message.lines().map(Line::from),
+            RtOptions::new(usize::from(wrap_width))
+                .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
+        );
+
+        lines.push(Line::from(""));
+        lines.push(header.into());
+        lines.extend(prefix_lines(wrapped, "› ".dim(), "  ".into()));
+        lines.push(Line::from(""));
+        lines
+    }
+}
+
+fn short_thread_id(thread_id: ThreadId) -> String {
+    let full = thread_id.to_string();
+    full.split('-').next().unwrap_or(full.as_str()).to_string()
+}
+
+fn group_chat_sender_spans(sender: &GroupChatSender) -> Vec<Span<'static>> {
+    match sender {
+        GroupChatSender::Human => vec!["human".bold()],
+        GroupChatSender::TeamLead => vec!["team lead".magenta().bold()],
+        GroupChatSender::SubAgent { id, persona } => {
+            let short_id = short_thread_id(*id);
+            if let Some(persona) = persona.as_deref().and_then(short_persona_label) {
+                vec![
+                    "subagent ".cyan().bold(),
+                    persona.cyan().bold(),
+                    " ".into(),
+                    format!("({short_id})").dim(),
+                ]
+            } else {
+                vec!["subagent ".cyan().bold(), short_id.cyan().bold()]
+            }
+        }
+    }
+}
+
+fn short_persona_label(persona: &str) -> Option<String> {
+    let trimmed = persona.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    }
+}
+
 #[derive(Debug)]
 struct SessionHeaderHistoryCell {
     version: &'static str,
@@ -1008,10 +1115,10 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
+        // Title line rendered inside the box: ">_ Kaabil Codex (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from("Kaabil Codex").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
@@ -1354,7 +1461,7 @@ pub(crate) fn empty_mcp_output() -> PlainHistoryCell {
         "  • No MCP servers configured.".italic().into(),
         Line::from(vec![
             "    See the ".into(),
-            "\u{1b}]8;;https://github.com/openai/codex/blob/main/docs/config.md#mcp_servers\u{7}MCP docs\u{1b}]8;;\u{7}".underlined(),
+            "\u{1b}]8;;https://github.com/shrey16/kaabil-codex/blob/main/docs/config.md#mcp_servers\u{7}MCP docs\u{1b}]8;;\u{7}".underlined(),
             " to configure them.".into(),
         ])
         .style(Style::default().add_modifier(Modifier::DIM)),

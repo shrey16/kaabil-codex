@@ -35,14 +35,14 @@ corepack prepare pnpm@10.8.1 --activate
 
 | Action                                     | Command                                  |
 | ------------------------------------------ | ---------------------------------------- |
-| Run a command in a specific package        | `pnpm --filter @openai/codex run build`  |
-| Install a dependency in a specific package | `pnpm --filter @openai/codex add lodash` |
+| Run a command in a specific package        | `pnpm --filter @kaabil/codex run build`  |
+| Install a dependency in a specific package | `pnpm --filter @kaabil/codex add lodash` |
 | Run a command in all packages              | `pnpm -r run test`                       |
 
 ## Monorepo structure
 
 ```
-codex/
+kaabil-codex/
 ├── pnpm-workspace.yaml    # Workspace configuration
 ├── .npmrc                 # pnpm configuration
 ├── package.json           # Root dependencies and scripts

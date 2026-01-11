@@ -73,7 +73,7 @@ pub fn test_tmp_path_buf() -> PathBuf {
 
 /// Returns a default `Config` whose on-disk state is confined to the provided
 /// temporary directory. Using a per-test directory keeps tests hermetic and
-/// avoids clobbering a developer’s real `~/.codex`.
+/// avoids clobbering a developer’s real `~/.kaabil-codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
     ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
@@ -87,8 +87,7 @@ pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
         codex_linux_sandbox_exe: Some(
-            codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
-                .expect("should find binary for codex-linux-sandbox"),
+            std::env::current_exe().expect("should find current test executable"),
         ),
         ..ConfigOverrides::default()
     }

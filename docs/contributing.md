@@ -2,9 +2,9 @@
 
 This project is under active development and the code will likely change pretty significantly.
 
-**At the moment, we are generally accepting external contributions only for bugs fixes.**
+**This fork is maintained for Kaabil’s internal use. External contributions may be declined.**
 
-If you want to add a new feature or change the behavior of an existing one, please open an issue proposing the feature or upvote an existing enhancement request. We will generally prioritize new features based on community feedback. New features must compose well with existing and upcoming features and fit into our roadmap. They must also be implemented consistently across all Codex surfaces (CLI, IDE extension, web, etc.).
+If you want to add a new feature or change the behavior of an existing one, please open an issue proposing the feature or upvote an existing enhancement request. We will generally prioritize new features based on internal needs and available bandwidth.
 
 If you want to contribute a bug fix, please open a bug report first - or verify that there is an existing bug report that discusses the issue. All bug fix PRs should include a link to a bug report.
 
@@ -46,25 +46,10 @@ If you want to contribute a bug fix, please open a bug report first - or verify 
 
 ### Getting help
 
-If you run into problems setting up the project, would like feedback on an idea, or just want to say _hi_ - please open a Discussion topic or jump into the relevant issue. We are happy to help.
+If you run into problems setting up the project or would like feedback on an idea, please open an issue in this repository.
 
-Together we can make Codex CLI an incredible tool. **Happy hacking!** :rocket:
+Together we can make Kaabil Codex CLI an incredible tool. **Happy hacking!** :rocket:
 
-### Contributor license agreement (CLA)
+### Security
 
-All contributors **must** accept the CLA. The process is lightweight:
-
-1. Open your pull request.
-2. Paste the following comment (or reply `recheck` if you've signed before):
-
-   ```text
-   I have read the CLA Document and I hereby sign the CLA
-   ```
-
-3. The CLA-Assistant bot records your signature in the repo and marks the status check as passed.
-
-No special Git commands, email attachments, or commit footers required.
-
-### Security & responsible AI
-
-Have you discovered a vulnerability or have concerns about model output? Please e-mail **security@openai.com** and we will respond promptly.
+If you discover a vulnerability, please contact the maintainers privately.

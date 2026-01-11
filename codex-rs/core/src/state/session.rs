@@ -1,6 +1,8 @@
 //! Session-wide mutable state.
 
+use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::GroupChatMessageEvent;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
@@ -8,12 +10,57 @@ use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::truncate::TruncationPolicy;
+use std::collections::HashMap;
+
+const MAX_GROUP_CHAT_MESSAGES: usize = 500;
+
+#[derive(Debug, Clone)]
+pub(crate) struct GroupChatState {
+    entries: Vec<GroupChatMessageEvent>,
+    cursors: HashMap<ThreadId, usize>,
+}
+
+impl GroupChatState {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            cursors: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn append(&mut self, message: GroupChatMessageEvent) -> usize {
+        self.entries.push(message);
+        if self.entries.len() > MAX_GROUP_CHAT_MESSAGES {
+            let overflow = self.entries.len().saturating_sub(MAX_GROUP_CHAT_MESSAGES);
+            self.entries.drain(..overflow);
+            for cursor in self.cursors.values_mut() {
+                *cursor = cursor.saturating_sub(overflow);
+            }
+        }
+        self.entries.len()
+    }
+
+    pub(crate) fn unread_messages(
+        &self,
+        subagent_id: ThreadId,
+    ) -> (usize, Vec<GroupChatMessageEvent>) {
+        let start = self.cursors.get(&subagent_id).copied().unwrap_or(0);
+        let start = start.min(self.entries.len());
+        let messages = self.entries[start..].to_vec();
+        (self.entries.len(), messages)
+    }
+
+    pub(crate) fn mark_read(&mut self, subagent_id: ThreadId, cursor: usize) {
+        self.cursors.insert(subagent_id, cursor);
+    }
+}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
+    pub(crate) group_chat: GroupChatState,
 }
 
 impl SessionState {
@@ -24,6 +71,7 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
+            group_chat: GroupChatState::new(),
         }
     }
 

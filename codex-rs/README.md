@@ -1,17 +1,17 @@
-# Codex CLI (Rust Implementation)
+# Kaabil Codex CLI (Rust Implementation)
 
-We provide Codex CLI as a standalone, native executable to ensure a zero-dependency install.
+We provide Kaabil Codex CLI as a standalone, native executable to ensure a zero-dependency install.
 
-## Installing Codex
+## Installing Kaabil Codex
 
-Today, the easiest way to install Codex is via `npm`:
+This fork is intended to be built locally:
 
 ```shell
-npm i -g @openai/codex
-codex
+cargo install --path codex-rs/cli --locked
+codex --version
 ```
 
-You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from our [GitHub Releases](https://github.com/openai/codex/releases).
+If you maintain your own releases, you can add alternative distribution methods as needed.
 
 ## Documentation quickstart
 
@@ -86,7 +86,7 @@ codex --sandbox workspace-write
 codex --sandbox danger-full-access
 ```
 
-The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
+The same setting can be persisted in `~/.kaabil-codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
 ## Code Organization
 

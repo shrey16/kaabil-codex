@@ -28,7 +28,6 @@ use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use codex_ansi_escape::ansi_escape_line;
 use codex_core::AuthManager;
-use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEdit;
@@ -40,6 +39,7 @@ use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::FinalOutput;
+use codex_core::protocol::GroupChatSender;
 use codex_core::protocol::ListSkillsResponseEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::SessionSource;
@@ -50,7 +50,6 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::user_input::UserInput;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
@@ -61,7 +60,6 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +69,7 @@ use std::thread;
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::interval;
 
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
@@ -327,9 +326,6 @@ pub(crate) struct App {
 
     // One-shot suppression of the next world-writable scan after user confirmation.
     skip_world_writable_scan_once: bool,
-
-    // Track background agent threads that are being drained.
-    agent_drains: HashSet<ThreadId>,
 }
 
 impl App {
@@ -341,48 +337,24 @@ impl App {
         }
     }
 
-    fn ensure_agent_drain(&mut self, thread_id: ThreadId, thread: Arc<CodexThread>) {
-        if !self.agent_drains.insert(thread_id) {
-            return;
-        }
-        tokio::spawn(async move {
-            loop {
-                match thread.next_event().await {
-                    Ok(event) => {
-                        if matches!(event.msg, EventMsg::ShutdownComplete) {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            %thread_id,
-                            error = ?err,
-                            "failed to receive event from agent"
-                        );
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
     async fn open_agents_panel(&mut self) {
-        let current_id = self.chat_widget.thread_id();
+        let Some(current_id) = self.chat_widget.thread_id() else {
+            self.chat_widget
+                .add_error_message("No active session for subagents.".to_string());
+            return;
+        };
         let mut summaries = Vec::new();
-        for thread_id in self.server.list_thread_ids().await {
+        for thread_id in self.server.list_subagent_ids(current_id).await {
             let status = match self.server.get_thread(thread_id).await {
-                Ok(thread) => {
-                    if current_id != Some(thread_id) {
-                        self.ensure_agent_drain(thread_id, Arc::clone(&thread));
-                    }
-                    thread.agent_status().await
-                }
+                Ok(thread) => thread.agent_status().await,
                 Err(_) => AgentStatus::NotFound,
             };
+            let persona = self.server.subagent_persona(thread_id).await;
             summaries.push(AgentSummary {
                 thread_id,
                 status,
-                is_current: current_id == Some(thread_id),
+                is_current: false,
+                persona,
             });
         }
 
@@ -396,59 +368,38 @@ impl App {
     }
 
     async fn send_prompt_to_agent(&mut self, thread_id: ThreadId, prompt: String) {
-        let thread = match self.server.get_thread(thread_id).await {
-            Ok(thread) => thread,
-            Err(err) => {
-                self.chat_widget
-                    .add_error_message(format!("Agent {thread_id} not found: {err}"));
-                return;
-            }
+        let op = Op::GroupChatMessage {
+            text: prompt,
+            mentions: vec![thread_id],
+            sender: GroupChatSender::Human,
         };
-
-        if self.chat_widget.thread_id() != Some(thread_id) {
-            self.ensure_agent_drain(thread_id, Arc::clone(&thread));
-        }
-
-        let op = Op::UserInput {
-            items: vec![UserInput::Text { text: prompt }],
-            final_output_json_schema: None,
-        };
-        match thread.submit(op).await {
-            Ok(_) => self
-                .chat_widget
-                .add_info_message(format!("Sent message to agent {thread_id}"), None),
-            Err(err) => self.chat_widget.add_error_message(format!(
-                "Failed to send message to agent {thread_id}: {err}"
-            )),
-        }
+        self.chat_widget.submit_op(op);
+        self.chat_widget
+            .add_info_message(format!("Sent message to subagent {thread_id}"), None);
     }
 
     async fn spawn_agent_with_prompt(&mut self, prompt: String) {
+        let Some(parent_id) = self.chat_widget.thread_id() else {
+            self.chat_widget
+                .add_error_message("No active session for subagents.".to_string());
+            return;
+        };
         let mut config = self.chat_widget.config_ref().clone();
         config.model = Some(self.current_model.clone());
-        let new_thread = match self.server.start_thread(config).await {
-            Ok(thread) => thread,
+        let subagent_id = match self
+            .server
+            .spawn_subagent(parent_id, config, prompt, None)
+            .await
+        {
+            Ok(thread_id) => thread_id,
             Err(err) => {
                 self.chat_widget
-                    .add_error_message(format!("Failed to spawn agent: {err}"));
+                    .add_error_message(format!("Failed to spawn subagent: {err}"));
                 return;
             }
         };
-        let thread_id = new_thread.thread_id;
-        self.ensure_agent_drain(thread_id, Arc::clone(&new_thread.thread));
-
-        let op = Op::UserInput {
-            items: vec![UserInput::Text { text: prompt }],
-            final_output_json_schema: None,
-        };
-        match new_thread.thread.submit(op).await {
-            Ok(_) => self
-                .chat_widget
-                .add_info_message(format!("Spawned agent {thread_id}"), None),
-            Err(err) => self
-                .chat_widget
-                .add_error_message(format!("Failed to send prompt to agent {thread_id}: {err}")),
-        }
+        self.chat_widget
+            .add_info_message(format!("Spawned subagent {subagent_id}"), None);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -559,7 +510,6 @@ impl App {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
-            agent_drains: HashSet::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -603,12 +553,17 @@ impl App {
 
         tui.frame_requester().schedule_frame();
 
+        let mut subagent_status_tick = interval(Duration::from_millis(1000));
+
         while select! {
             Some(event) = app_event_rx.recv() => {
                 app.handle_event(tui, event).await?
             }
             Some(event) = tui_events.next() => {
                 app.handle_tui_event(tui, event).await?
+            }
+            _ = subagent_status_tick.tick() => {
+                app.refresh_subagent_status().await?
             }
         } {}
         tui.terminal.clear()?;
@@ -664,6 +619,33 @@ impl App {
                 }
             }
         }
+        Ok(true)
+    }
+
+    async fn refresh_subagent_status(&mut self) -> Result<bool> {
+        let Some(thread_id) = self.chat_widget.thread_id() else {
+            return Ok(true);
+        };
+        let subagent_ids = self.server.list_subagent_ids(thread_id).await;
+        if subagent_ids.is_empty() {
+            self.chat_widget.update_subagent_statuses(Vec::new());
+            return Ok(true);
+        }
+        let mut summaries = Vec::with_capacity(subagent_ids.len());
+        for subagent_id in subagent_ids {
+            let status = match self.server.get_thread(subagent_id).await {
+                Ok(thread) => thread.agent_status().await,
+                Err(_) => AgentStatus::NotFound,
+            };
+            let persona = self.server.subagent_persona(subagent_id).await;
+            summaries.push(AgentSummary {
+                thread_id: subagent_id,
+                status,
+                is_current: false,
+                persona,
+            });
+        }
+        self.chat_widget.update_subagent_statuses(summaries);
         Ok(true)
     }
 
@@ -1584,7 +1566,6 @@ mod tests {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
-            agent_drains: HashSet::new(),
         }
     }
 
@@ -1625,7 +1606,6 @@ mod tests {
                 pending_update_action: None,
                 suppress_shutdown_complete: false,
                 skip_world_writable_scan_once: false,
-                agent_drains: HashSet::new(),
             },
             rx,
             op_rx,

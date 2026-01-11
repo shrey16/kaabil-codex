@@ -253,7 +253,7 @@ impl UriBasedFileOpener {
     }
 }
 
-/// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+/// Settings that govern if and what will be written to `~/.kaabil-codex/history.jsonl`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct History {
     /// If true, history entries will not be written to disk.
@@ -625,6 +625,8 @@ pub struct ShellEnvironmentPolicyToml {
 }
 
 pub type EnvironmentVariablePattern = WildMatchPattern<'*', '?'>;
+pub type ToolNamePattern = WildMatchPattern<'*', '?'>;
+pub type ShellCommandPattern = WildMatchPattern<'*', '?'>;
 
 /// Deriving the `env` based on this policy works as follows:
 /// 1. Create an initial map based on the `inherit` policy.
@@ -699,10 +701,110 @@ impl Default for ShellEnvironmentPolicy {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ToolPolicyToml {
+    /// Optional allowlist of tool names/patterns. When set, only matching tools are exposed.
+    pub tool_allowlist: Option<Vec<String>>,
+    /// Optional denylist of tool names/patterns. Matching tools are removed.
+    pub tool_denylist: Option<Vec<String>>,
+    /// Optional allowlist of shell command patterns. When set, only matching commands may run.
+    pub shell_command_allowlist: Option<Vec<String>>,
+    /// Optional denylist of shell command patterns. Matching commands are rejected.
+    pub shell_command_denylist: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ToolPolicy {
+    pub tool_allowlist: Option<Vec<ToolNamePattern>>,
+    pub tool_denylist: Vec<ToolNamePattern>,
+    pub shell_command_allowlist: Option<Vec<ShellCommandPattern>>,
+    pub shell_command_denylist: Vec<ShellCommandPattern>,
+}
+
+impl ToolPolicy {
+    pub fn apply_overrides(&mut self, overrides: ToolPolicyToml) {
+        if let Some(tool_allowlist) = overrides.tool_allowlist {
+            self.tool_allowlist = Some(parse_tool_patterns(tool_allowlist));
+        }
+        if let Some(tool_denylist) = overrides.tool_denylist {
+            self.tool_denylist = parse_tool_patterns(tool_denylist);
+        }
+        if let Some(shell_command_allowlist) = overrides.shell_command_allowlist {
+            self.shell_command_allowlist =
+                Some(parse_shell_command_patterns(shell_command_allowlist));
+        }
+        if let Some(shell_command_denylist) = overrides.shell_command_denylist {
+            self.shell_command_denylist = parse_shell_command_patterns(shell_command_denylist);
+        }
+    }
+
+    pub fn tool_allowed(&self, name: &str) -> bool {
+        if let Some(allowlist) = &self.tool_allowlist
+            && !matches_any_pattern(name, allowlist)
+        {
+            return false;
+        }
+        if matches_any_pattern(name, &self.tool_denylist) {
+            return false;
+        }
+        true
+    }
+
+    pub fn shell_command_allowed(&self, command: &str) -> bool {
+        if let Some(allowlist) = &self.shell_command_allowlist
+            && !matches_any_pattern(command, allowlist)
+        {
+            return false;
+        }
+        if matches_any_pattern(command, &self.shell_command_denylist) {
+            return false;
+        }
+        true
+    }
+}
+
+fn parse_tool_patterns(patterns: Vec<String>) -> Vec<ToolNamePattern> {
+    patterns
+        .into_iter()
+        .map(|pattern| ToolNamePattern::new(&pattern))
+        .collect()
+}
+
+fn parse_shell_command_patterns(patterns: Vec<String>) -> Vec<ShellCommandPattern> {
+    patterns
+        .into_iter()
+        .map(|pattern| ShellCommandPattern::new(&pattern))
+        .collect()
+}
+
+fn matches_any_pattern(value: &str, patterns: &[WildMatchPattern<'*', '?'>]) -> bool {
+    patterns.iter().any(|pattern| pattern.matches(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn tool_policy_overrides_filter_tools_and_commands() {
+        let mut policy = ToolPolicy::default();
+        policy.apply_overrides(ToolPolicyToml {
+            tool_allowlist: Some(vec!["shell".to_string(), "mcp__test__*".to_string()]),
+            tool_denylist: Some(vec!["mcp__test__blocked".to_string()]),
+            shell_command_allowlist: Some(vec!["git *".to_string(), "rg *".to_string()]),
+            shell_command_denylist: Some(vec!["git push*".to_string()]),
+        });
+
+        assert_eq!(policy.tool_allowed("shell"), true);
+        assert_eq!(policy.tool_allowed("mcp__test__ok"), true);
+        assert_eq!(policy.tool_allowed("mcp__test__blocked"), false);
+        assert_eq!(policy.tool_allowed("apply_patch"), false);
+        assert_eq!(policy.shell_command_allowed("git status"), true);
+        assert_eq!(policy.shell_command_allowed("git push origin main"), false);
+        assert_eq!(policy.shell_command_allowed("rg --files"), true);
+        assert_eq!(policy.shell_command_allowed("cargo test"), false);
+    }
 
     #[test]
     fn deserialize_stdio_command_server_config() {

@@ -11,6 +11,8 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::FileChange;
+use codex_core::protocol::GroupChatMessageEvent;
+use codex_core::protocol::GroupChatSender;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
@@ -23,6 +25,7 @@ use codex_core::protocol::TurnCompleteEvent;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchEndEvent;
+use codex_protocol::ThreadId;
 use codex_protocol::num_format::format_with_separators;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -136,7 +139,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
         ts_msg!(
             self,
-            "OpenAI Codex v{} (research preview)\n--------",
+            "Kaabil Codex v{} (experimental fork)\n--------",
             VERSION
         );
 
@@ -285,6 +288,22 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "{}\n{}",
                     "codex".style(self.italic).style(self.magenta),
                     message,
+                );
+            }
+            EventMsg::GroupChatMessage(GroupChatMessageEvent {
+                sender,
+                text,
+                display,
+            }) => {
+                if !display {
+                    return CodexStatus::Running;
+                }
+                let label = group_chat_sender_label(&sender);
+                ts_msg!(
+                    self,
+                    "{}\n{}",
+                    "group chat".style(self.italic).style(self.magenta),
+                    format!("[{label}] {text}")
                 );
             }
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent { command, cwd, .. }) => {
@@ -657,5 +676,38 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}()")
     } else {
         format!("{fq_tool_name}({args_str})")
+    }
+}
+
+fn group_chat_sender_label(sender: &GroupChatSender) -> String {
+    match sender {
+        GroupChatSender::Human => "human".to_string(),
+        GroupChatSender::TeamLead => "team lead".to_string(),
+        GroupChatSender::SubAgent { id, persona } => {
+            let short_id = short_thread_id(*id);
+            if let Some(persona) = persona.as_deref().and_then(short_persona_label) {
+                format!("{persona} (subagent {short_id})")
+            } else {
+                format!("subagent {short_id}")
+            }
+        }
+    }
+}
+
+fn short_thread_id(thread_id: ThreadId) -> String {
+    let full = thread_id.to_string();
+    full.split('-').next().unwrap_or(full.as_str()).to_string()
+}
+
+fn short_persona_label(persona: &str) -> Option<String> {
+    let trimmed = persona.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
     }
 }

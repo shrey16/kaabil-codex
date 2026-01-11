@@ -1,6 +1,6 @@
 #!/usr/bin/env -S NODE_NO_WARNINGS=1 pnpm ts-node-esm --files
 
-import { Codex } from "@openai/codex-sdk";
+import { Codex } from "@kaabil/codex-sdk";
 import { codexPathOverride } from "./helpers.ts";
 import z from "zod";
 import zodToJsonSchema from "zod-to-json-schema";

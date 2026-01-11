@@ -3,16 +3,16 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: bump-kaabil-version.sh [--upstream VERSION] [--kaabil N] [--auto] [--from-npm|--no-npm]
+Usage: bump-kaabil-version.sh [--upstream VERSION] [--kaabil N] [--auto] [--git-remote NAME] [--no-git]
 
 Updates codex-rs/Cargo.toml workspace version to <upstream>-kaabil.<n>.
 
 Options:
   --upstream VERSION  Upstream release version (e.g. 0.79.0)
   --kaabil N          Kaabil suffix number (default: auto)
-  --auto              Fetch latest version from npm and avoid downgrades
-  --from-npm          Fetch upstream version from npm (default)
-  --no-npm            Do not query npm; require --upstream
+  --auto              Fetch latest tag from git remote and avoid downgrades
+  --git-remote NAME   Git remote to query for tags (default: upstream)
+  --no-git            Do not query git; require --upstream
 USAGE
 }
 
@@ -21,8 +21,9 @@ cargo_toml="${repo_root}/codex-rs/Cargo.toml"
 
 upstream=""
 kaabil=""
-use_npm=1
+use_git=1
 auto=0
+git_remote="upstream"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,15 +37,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --auto)
       auto=1
-      use_npm=1
+      use_git=1
       shift
       ;;
-    --from-npm)
-      use_npm=1
-      shift
+    --git-remote)
+      git_remote="${2:-}"
+      shift 2
       ;;
-    --no-npm)
-      use_npm=0
+    --no-git)
+      use_git=0
       shift
       ;;
     -h|--help)
@@ -64,18 +65,55 @@ if [[ ${auto} -eq 1 && -n "${upstream}" ]]; then
   exit 2
 fi
 
-if [[ ${auto} -eq 1 && ${use_npm} -eq 0 ]]; then
-  echo "--auto requires npm access" >&2
+if [[ ${auto} -eq 1 && ${use_git} -eq 0 ]]; then
+  echo "--auto requires git access" >&2
   exit 2
 fi
 
 if [[ -z "${upstream}" ]]; then
-  if [[ ${use_npm} -eq 1 ]]; then
-    if ! command -v npm >/dev/null 2>&1; then
-      echo "npm not found; pass --upstream VERSION instead" >&2
+  if [[ ${use_git} -eq 1 ]]; then
+    if ! command -v git >/dev/null 2>&1; then
+      echo "git not found; pass --upstream VERSION instead" >&2
       exit 1
     fi
-    upstream="$(npm view @openai/codex version)"
+    if ! git -C "${repo_root}" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "Not a git repository; pass --upstream VERSION instead" >&2
+      exit 1
+    fi
+    if ! git -C "${repo_root}" remote get-url "${git_remote}" >/dev/null 2>&1; then
+      echo "Git remote '${git_remote}' not found; pass --upstream VERSION instead" >&2
+      exit 1
+    fi
+    upstream="$(python3 - "${repo_root}" "${git_remote}" <<'PY'
+import re
+import subprocess
+import sys
+
+repo_root = sys.argv[1]
+remote = sys.argv[2]
+
+output = subprocess.check_output(
+    ["git", "-C", repo_root, "ls-remote", "--tags", "--refs", remote, "rust-v*"],
+    text=True,
+)
+
+versions = []
+for line in output.splitlines():
+    ref = line.split()[1]
+    tag = ref.split("/")[-1]
+    match = re.match(r"rust-v(\\d+)\\.(\\d+)\\.(\\d+)$", tag)
+    if not match:
+        continue
+    versions.append((tuple(int(x) for x in match.groups()), match.group(0)))
+
+if not versions:
+    raise SystemExit("No rust-v tags found on remote")
+
+versions.sort()
+latest = versions[-1][1]
+print(latest.replace("rust-v", ""))
+PY
+)"
   else
     echo "Missing upstream version. Use --upstream VERSION." >&2
     exit 1
@@ -125,7 +163,7 @@ print((a > b) - (a < b))
 PY
 )"
   if [[ "${version_cmp}" -gt 0 ]]; then
-    echo "Current upstream ${current_upstream} is newer than npm ${upstream}; skipping."
+    echo "Current upstream ${current_upstream} is newer than git tag ${upstream}; skipping."
     exit 0
   fi
 fi

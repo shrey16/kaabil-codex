@@ -1,6 +1,9 @@
 # AGENTS.md
 
-For information about AGENTS.md, see [this documentation](https://developers.openai.com/codex/guides/agents-md).
+`AGENTS.md` files define repository-specific instructions for the agent. The file’s scope
+applies to its directory tree, with deeper files overriding higher-level guidance.
+
+Add an `AGENTS.md` near the repo root to document coding standards, commands, and expectations.
 
 ## Hierarchical agents message
 

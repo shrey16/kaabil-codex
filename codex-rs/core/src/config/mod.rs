@@ -11,6 +11,8 @@ use crate::config::types::SandboxWorkspaceWrite;
 use crate::config::types::ScrollInputMode;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
+use crate::config::types::ToolPolicy;
+use crate::config::types::ToolPolicyToml;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
 use crate::config_loader::ConfigLayerStack;
@@ -160,7 +162,7 @@ pub struct Config {
     /// appends one extra argument containing a JSON payload describing the
     /// event.
     ///
-    /// Example `~/.codex/config.toml` snippet:
+    /// Example `~/.kaabil-codex/config.toml` snippet:
     ///
     /// ```toml
     /// notify = ["notify-send", "Codex"]
@@ -262,7 +264,7 @@ pub struct Config {
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
-    ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
+    ///          https://github.com/shrey16/kaabil-codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
     /// file: CODEX_HOME/.credentials.json
     ///       This file will be readable to Codex and other applications running as the same user.
     /// auto (default): keyring if available, otherwise file.
@@ -280,11 +282,14 @@ pub struct Config {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
-    /// Directory containing all Codex state (defaults to `~/.codex` but can be
+    /// Optional per-session tool restrictions (tool names and shell command patterns).
+    pub tool_policy: ToolPolicy,
+
+    /// Directory containing all Codex state (defaults to `~/.kaabil-codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: PathBuf,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+    /// Settings that govern if and what will be written to `~/.kaabil-codex/history.jsonl`.
     pub history: History,
 
     /// Optional URI-based file opener. If set, citations to files in the model
@@ -681,7 +686,7 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
     Ok(())
 }
 
-/// Base config deserialized from ~/.codex/config.toml.
+/// Base config deserialized from ~/.kaabil-codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ConfigToml {
     /// Optional override of model selection.
@@ -745,7 +750,7 @@ pub struct ConfigToml {
 
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
-    ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
+    ///          https://github.com/shrey16/kaabil-codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
     /// file: Use a file in the Codex home directory.
     /// auto (default): Use the OS-specific keyring service if available, otherwise use a file.
     #[serde(default)]
@@ -764,6 +769,9 @@ pub struct ConfigToml {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
+    /// Optional per-session tool restrictions (tool names and shell command patterns).
+    pub tool_policy: Option<ToolPolicyToml>,
+
     /// Profile to use from the `profiles` map.
     pub profile: Option<String>,
 
@@ -771,7 +779,7 @@ pub struct ConfigToml {
     #[serde(default)]
     pub profiles: HashMap<String, ConfigProfile>,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+    /// Settings that govern if and what will be written to `~/.kaabil-codex/history.jsonl`.
     #[serde(default)]
     pub history: Option<History>,
 
@@ -1322,6 +1330,11 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
 
+        let mut tool_policy = ToolPolicy::default();
+        if let Some(tool_policy_overrides) = cfg.tool_policy {
+            tool_policy.apply_overrides(tool_policy_overrides);
+        }
+
         // Ensure that every field of ConfigRequirements is applied to the final
         // Config.
         let ConfigRequirements {
@@ -1377,6 +1390,7 @@ impl Config {
                 })
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
+            tool_policy,
             codex_home,
             config_layer_stack,
             history,
@@ -1547,7 +1561,7 @@ fn default_review_model() -> String {
 
 /// Returns the path to the Codex configuration directory, which can be
 /// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// `~/.kaabil-codex`.
 ///
 /// - If `CODEX_HOME` is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
@@ -1568,7 +1582,7 @@ pub fn find_codex_home() -> std::io::Result<PathBuf> {
             "Could not find home directory",
         )
     })?;
-    p.push(".codex");
+    p.push(".kaabil-codex");
     Ok(p)
 }
 
@@ -3249,6 +3263,7 @@ model_verbosity = "high"
                 project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
                 project_doc_fallback_filenames: Vec::new(),
                 tool_output_token_limit: None,
+                tool_policy: ToolPolicy::default(),
                 codex_home: fixture.codex_home(),
                 config_layer_stack: Default::default(),
                 history: History::default(),
@@ -3335,6 +3350,7 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_policy: ToolPolicy::default(),
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),
             history: History::default(),
@@ -3436,6 +3452,7 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_policy: ToolPolicy::default(),
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),
             history: History::default(),
@@ -3523,6 +3540,7 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_policy: ToolPolicy::default(),
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),
             history: History::default(),

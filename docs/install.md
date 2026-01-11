@@ -10,14 +10,14 @@
 
 ### DotSlash
 
-The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
+This fork does not publish DotSlash files. If you maintain your own releases, you can optionally generate a DotSlash file for repeatable installs.
 
 ### Build from source
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
-cd codex/codex-rs
+git clone https://github.com/shrey16/kaabil-codex.git
+cd kaabil-codex/codex-rs
 
 # Install the Rust toolchain, if necessary.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -29,7 +29,7 @@ cargo install just
 # Optional: install nextest for the `just test` helper
 cargo install cargo-nextest
 
-# Build Codex.
+# Build Kaabil Codex.
 cargo build
 
 # Launch the TUI with a sample prompt.
@@ -47,14 +47,18 @@ just test
 cargo test --all-features
 ```
 
+### Windows (WSL2)
+
+Windows support is provided via WSL2. Use an Ubuntu 20.04+ or Debian 10+ distro and follow the Linux build steps above from inside your WSL shell.
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.
 
-The TUI defaults to `RUST_LOG=codex_core=info,codex_tui=info,codex_rmcp_client=info` and log messages are written to `~/.codex/log/codex-tui.log`, so you can leave the following running in a separate terminal to monitor log messages as they are written:
+The TUI defaults to `RUST_LOG=codex_core=info,codex_tui=info,codex_rmcp_client=info` and log messages are written to `~/.kaabil-codex/log/codex-tui.log`, so you can leave the following running in a separate terminal to monitor log messages as they are written:
 
 ```bash
-tail -F ~/.codex/log/codex-tui.log
+tail -F ~/.kaabil-codex/log/codex-tui.log
 ```
 
 By comparison, the non-interactive mode (`codex exec`) defaults to `RUST_LOG=error`, but messages are printed inline, so there is no need to monitor a separate file.
