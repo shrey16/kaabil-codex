@@ -1123,6 +1123,9 @@ pub enum GroupChatSender {
         id: ThreadId,
         #[serde(skip_serializing_if = "Option::is_none")]
         persona: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        display_name: Option<String>,
     },
 }
 

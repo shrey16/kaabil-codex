@@ -48,6 +48,7 @@ impl AgentControl {
         prompt: String,
         headless: bool,
         persona: Option<String>,
+        display_name: Option<String>,
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
         let new_thread = state
@@ -59,7 +60,7 @@ impl AgentControl {
             .await?;
 
         state
-            .register_subagent(parent_id, new_thread.thread_id, persona)
+            .register_subagent(parent_id, new_thread.thread_id, persona, display_name)
             .await;
 
         if headless {
@@ -138,7 +139,15 @@ impl AgentControl {
         let mut subagents = state.subagents_for_parent(parent_id).await;
         subagents.sort_by(|(left, _), (right, _)| left.to_string().cmp(&right.to_string()));
         let mut out = Vec::with_capacity(subagents.len());
-        for (id, SubagentInfo { persona, .. }) in subagents {
+        for (
+            id,
+            SubagentInfo {
+                persona,
+                display_name,
+                ..
+            },
+        ) in subagents
+        {
             let status = match state.get_thread(id).await {
                 Ok(thread) => thread.agent_status().await,
                 Err(_) => AgentStatus::NotFound,
@@ -147,6 +156,7 @@ impl AgentControl {
                 id,
                 status,
                 persona,
+                display_name,
             });
         }
         Ok(out)
@@ -179,6 +189,18 @@ impl AgentControl {
             .subagent_info(subagent_id)
             .await
             .and_then(|info| info.persona))
+    }
+
+    #[allow(dead_code)] // Used by multi-agent orchestration.
+    pub(crate) async fn subagent_display_name(
+        &self,
+        subagent_id: ThreadId,
+    ) -> CodexResult<Option<String>> {
+        let state = self.upgrade()?;
+        Ok(state
+            .subagent_info(subagent_id)
+            .await
+            .and_then(|info| info.display_name))
     }
 
     #[allow(dead_code)] // Used by upcoming multi-agent tooling.
@@ -217,6 +239,7 @@ pub(crate) struct SubagentSummary {
     pub(crate) id: ThreadId,
     pub(crate) status: AgentStatus,
     pub(crate) persona: Option<String>,
+    pub(crate) display_name: Option<String>,
 }
 
 /// When an agent is spawned "headless" (no UI/view attached), there may be no consumer polling
@@ -392,6 +415,7 @@ async fn record_and_post_subagent_message(
         let sender = GroupChatSender::SubAgent {
             id: agent_id,
             persona: info.persona.clone(),
+            display_name: info.display_name.clone(),
         };
         if let Err(err) = state
             .send_op(

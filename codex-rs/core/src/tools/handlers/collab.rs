@@ -28,6 +28,7 @@ pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
 #[derive(Debug, Deserialize)]
 struct SpawnAgentArgs {
     message: String,
+    display_name: String,
     persona: Option<String>,
     tool_allowlist: Option<Vec<String>>,
     tool_denylist: Option<Vec<String>>,
@@ -127,12 +128,30 @@ async fn handle_spawn_agent(
     }
     let SpawnAgentArgs {
         message,
+        display_name,
         persona,
         tool_allowlist,
         tool_denylist,
         shell_command_allowlist,
         shell_command_denylist,
     } = args;
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "display_name is required for new agents".to_string(),
+        ));
+    }
+    let display_name = display_name
+        .lines()
+        .next()
+        .unwrap_or(display_name)
+        .trim()
+        .to_string();
+    if display_name.is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "display_name must be a single non-empty line".to_string(),
+        ));
+    }
     let mut config = crate::agent::build_agent_spawn_config(turn.as_ref())
         .map_err(FunctionCallError::RespondToModel)?;
     let orchestrator_id = session.conversation_id();
@@ -150,7 +169,14 @@ async fn handle_spawn_agent(
     let result = session
         .services
         .agent_control
-        .spawn_agent(orchestrator_id, config, message, true, persona)
+        .spawn_agent(
+            orchestrator_id,
+            config,
+            message,
+            true,
+            persona,
+            Some(display_name),
+        )
         .await
         .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
 
@@ -193,6 +219,12 @@ async fn handle_send_input(
             .subagent_persona(subagent_id)
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        let display_name = session
+            .services
+            .agent_control
+            .subagent_display_name(subagent_id)
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         session
             .services
             .agent_control
@@ -202,6 +234,7 @@ async fn handle_send_input(
                 GroupChatSender::SubAgent {
                     id: subagent_id,
                     persona,
+                    display_name,
                 },
             )
             .await

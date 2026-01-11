@@ -437,6 +437,14 @@ fn create_spawn_agent_tool() -> ToolSpec {
         },
     );
     properties.insert(
+        "display_name".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Display name for the subagent (shown in status lines and group chat).".to_string(),
+            ),
+        },
+    );
+    properties.insert(
         "persona".to_string(),
         JsonSchema::String {
             description: Some("Optional persona instructions for the new agent.".to_string()),
@@ -486,7 +494,7 @@ fn create_spawn_agent_tool() -> ToolSpec {
         strict: false,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["message".to_string()]),
+            required: Some(vec!["message".to_string(), "display_name".to_string()]),
             additional_properties: Some(false.into()),
         },
     })

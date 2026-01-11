@@ -930,6 +930,7 @@ impl Session {
                     template.initial_message.to_string(),
                     true,
                     Some(template.persona.to_string()),
+                    Some(template.display_name.to_string()),
                 )
                 .await;
             if let Err(err) = result {
@@ -1356,7 +1357,7 @@ impl Session {
             if unread.is_empty() {
                 continue;
             }
-            let prompt = format_group_chat_prompt(&unread);
+            let prompt = format_group_chat_prompt(&unread, true);
             match self
                 .services
                 .agent_control
@@ -2147,8 +2148,10 @@ fn build_subagent_aliases(subagents: &[SubagentSummary]) -> HashMap<String, Opti
         let id = subagent.id;
         insert_alias(&mut aliases, id.to_string().to_ascii_lowercase(), id);
         insert_alias(&mut aliases, short_thread_id(id).to_ascii_lowercase(), id);
-        if let Some(persona) = subagent.persona.as_deref().and_then(short_persona_label) {
-            insert_alias(&mut aliases, persona.to_ascii_lowercase(), id);
+        if let Some(display_name) = subagent.display_name.as_deref() {
+            for alias in display_name_aliases(display_name) {
+                insert_alias(&mut aliases, alias, id);
+            }
         }
     }
     aliases
@@ -2193,10 +2196,13 @@ fn format_group_chat_history_text(
     }
 }
 
-fn format_group_chat_prompt(messages: &[GroupChatMessageEvent]) -> String {
+fn format_group_chat_prompt(
+    messages: &[GroupChatMessageEvent],
+    treat_team_lead_as_human: bool,
+) -> String {
     let mut output = String::from("Unread group chat messages:\n");
     for message in messages {
-        let label = group_chat_sender_label(&message.sender);
+        let label = group_chat_sender_label_for_prompt(&message.sender, treat_team_lead_as_human);
         let text = message.text.as_str();
         output.push_str(&format!("[{label}] {text}\n"));
     }
@@ -2204,14 +2210,30 @@ fn format_group_chat_prompt(messages: &[GroupChatMessageEvent]) -> String {
     output
 }
 
+fn group_chat_sender_label_for_prompt(
+    sender: &GroupChatSender,
+    treat_team_lead_as_human: bool,
+) -> String {
+    if treat_team_lead_as_human && matches!(sender, GroupChatSender::TeamLead) {
+        return "human".to_string();
+    }
+    group_chat_sender_label(sender)
+}
+
 fn group_chat_sender_label(sender: &GroupChatSender) -> String {
     match sender {
         GroupChatSender::Human => "human".to_string(),
         GroupChatSender::TeamLead => "team lead".to_string(),
-        GroupChatSender::SubAgent { id, persona } => {
+        GroupChatSender::SubAgent {
+            id,
+            persona: _,
+            display_name,
+        } => {
             let short_id = short_thread_id(*id);
-            if let Some(persona) = persona.as_deref().and_then(short_persona_label) {
-                format!("{persona} (subagent {short_id})")
+            if let Some(display_name) = display_name.as_deref().map(str::trim)
+                && !display_name.is_empty()
+            {
+                format!("{display_name} (subagent {short_id})")
             } else {
                 format!("subagent {short_id}")
             }
@@ -2224,17 +2246,33 @@ fn short_thread_id(thread_id: ThreadId) -> String {
     full.split('-').next().unwrap_or(full.as_str()).to_string()
 }
 
-fn short_persona_label(persona: &str) -> Option<String> {
-    let trimmed = persona.trim();
+fn display_name_aliases(display_name: &str) -> Vec<String> {
+    let trimmed = display_name.trim();
     if trimmed.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
-    if label.is_empty() {
-        None
-    } else {
-        Some(label.to_string())
+    let mut normalized = String::new();
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            normalized.push(ch.to_ascii_lowercase());
+        } else if ch.is_whitespace() {
+            normalized.push('-');
+        }
     }
+    let normalized = normalized.trim_matches('-');
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut aliases = Vec::new();
+    aliases.push(normalized.to_string());
+    if normalized.contains('-') {
+        aliases.push(normalized.replace('-', ""));
+        aliases.push(normalized.replace('-', "_"));
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 /// Operation handlers

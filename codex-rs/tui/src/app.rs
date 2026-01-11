@@ -126,6 +126,33 @@ fn emit_skill_load_warnings(app_event_tx: &AppEventSender, errors: &[SkillErrorI
     }
 }
 
+fn split_subagent_spawn_prompt(prompt: &str) -> Result<(String, String), String> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "Provide a display name on the first line and an initial prompt on the lines below."
+                .to_string(),
+        );
+    }
+    let mut lines = trimmed.lines();
+    let Some(first_line) = lines.next() else {
+        return Err(
+            "Provide a display name on the first line and an initial prompt on the lines below."
+                .to_string(),
+        );
+    };
+    let display_name = first_line.trim();
+    if display_name.is_empty() {
+        return Err("Display name is required for new subagents.".to_string());
+    }
+    let message = lines.collect::<Vec<_>>().join("\n");
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Initial prompt is required after the display name.".to_string());
+    }
+    Ok((display_name.to_string(), message.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionSummary {
     usage_line: String,
@@ -350,11 +377,13 @@ impl App {
                 Err(_) => AgentStatus::NotFound,
             };
             let persona = self.server.subagent_persona(thread_id).await;
+            let display_name = self.server.subagent_display_name(thread_id).await;
             summaries.push(AgentSummary {
                 thread_id,
                 status,
                 is_current: false,
                 persona,
+                display_name,
             });
         }
 
@@ -384,11 +413,18 @@ impl App {
                 .add_error_message("No active session for subagents.".to_string());
             return;
         };
+        let (display_name, message) = match split_subagent_spawn_prompt(&prompt) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.chat_widget.add_error_message(err);
+                return;
+            }
+        };
         let mut config = self.chat_widget.config_ref().clone();
         config.model = Some(self.current_model.clone());
         let subagent_id = match self
             .server
-            .spawn_subagent(parent_id, config, prompt, None)
+            .spawn_subagent(parent_id, config, message, None, Some(display_name))
             .await
         {
             Ok(thread_id) => thread_id,
@@ -638,11 +674,13 @@ impl App {
                 Err(_) => AgentStatus::NotFound,
             };
             let persona = self.server.subagent_persona(subagent_id).await;
+            let display_name = self.server.subagent_display_name(subagent_id).await;
             summaries.push(AgentSummary {
                 thread_id: subagent_id,
                 status,
                 is_current: false,
                 persona,
+                display_name,
             });
         }
         self.chat_widget.update_subagent_statuses(summaries);

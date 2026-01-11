@@ -4,20 +4,24 @@ pub(crate) const SUBAGENT_PROMPT: &str = include_str!("../subagent_prompt.md");
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentTemplate {
+    pub(crate) display_name: &'static str,
     pub(crate) persona: &'static str,
     pub(crate) initial_message: &'static str,
 }
 
 pub(crate) const DEFAULT_SUBAGENT_TEMPLATES: &[SubagentTemplate] = &[
     SubagentTemplate {
+        display_name: "Planner",
         persona: "Planner: break work into steps, flag dependencies, and propose parallel splits.",
         initial_message: "You are the Planner subagent. Reply \"Ready\" and wait for assignments.",
     },
     SubagentTemplate {
+        display_name: "Builder",
         persona: "Builder: focus on implementation details and concrete code changes.",
         initial_message: "You are the Builder subagent. Reply \"Ready\" and wait for assignments.",
     },
     SubagentTemplate {
+        display_name: "Reviewer",
         persona: "Reviewer: focus on correctness, edge cases, and tests.",
         initial_message: "You are the Reviewer subagent. Reply \"Ready\" and wait for assignments.",
     },

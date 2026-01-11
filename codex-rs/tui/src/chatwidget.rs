@@ -442,43 +442,32 @@ fn format_subagent_summary(summaries: &[AgentSummary]) -> Option<String> {
     for summary in summaries {
         let label = format_subagent_label(summary);
         let status = subagent_status_label(&summary.status);
-        parts.push(format!("{label} {status}"));
+        parts.push(format!("{label} - {status}"));
     }
     if parts.is_empty() {
         return None;
     }
 
-    Some(format!("Subagents: {}", parts.join(", ")))
+    Some(parts.join("\n"))
 }
 
 fn format_subagent_label(summary: &AgentSummary) -> String {
     let short_id = ChatWidget::short_thread_id(summary.thread_id);
-    if let Some(persona) = summary.persona.as_deref().and_then(short_persona_label) {
-        return format!("{persona} ({short_id})");
+    if let Some(display_name) = summary.display_name.as_deref().map(str::trim)
+        && !display_name.is_empty()
+    {
+        return format!("{display_name} ({short_id})");
     }
     short_id
 }
 
 fn subagent_status_label(status: &AgentStatus) -> &'static str {
     match status {
-        AgentStatus::PendingInit => "pending",
-        AgentStatus::Running => "running",
+        AgentStatus::PendingInit => "processing",
+        AgentStatus::Running => "processing",
         AgentStatus::Completed(_) => "idle",
         AgentStatus::Errored(_) => "errored",
         AgentStatus::Shutdown | AgentStatus::NotFound => "offline",
-    }
-}
-
-fn short_persona_label(persona: &str) -> Option<String> {
-    let trimmed = persona.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
-    if label.is_empty() {
-        None
-    } else {
-        Some(label.to_string())
     }
 }
 
@@ -3180,8 +3169,10 @@ impl ChatWidget {
             let thread_id = agent.thread_id;
             let subagent_label = format_subagent_label(&agent);
             let status_text = Self::agent_status_description(&agent.status);
+            let display_name_search = agent.display_name.clone().unwrap_or_default();
             let persona_search = agent.persona.clone().unwrap_or_default();
-            let search_value = format!("{thread_id} {persona_search} {status_text}");
+            let search_value =
+                format!("{thread_id} {display_name_search} {persona_search} {status_text}");
             let disabled_reason = if agent.is_current {
                 Some("use the main composer".to_string())
             } else if matches!(agent.status, AgentStatus::NotFound) {
@@ -3223,7 +3214,7 @@ impl ChatWidget {
         let (title, placeholder, context_label) = match target {
             AgentPromptTarget::NewAgent => (
                 "Spawn new subagent".to_string(),
-                "Type the initial prompt for the new subagent.".to_string(),
+                "Line 1: display name. Line 2+: initial prompt.".to_string(),
                 None,
             ),
             AgentPromptTarget::Existing(thread_id) => (

@@ -1016,12 +1016,18 @@ fn group_chat_sender_spans(sender: &GroupChatSender) -> Vec<Span<'static>> {
     match sender {
         GroupChatSender::Human => vec!["human".bold()],
         GroupChatSender::TeamLead => vec!["team lead".magenta().bold()],
-        GroupChatSender::SubAgent { id, persona } => {
+        GroupChatSender::SubAgent {
+            id,
+            persona: _,
+            display_name,
+        } => {
             let short_id = short_thread_id(*id);
-            if let Some(persona) = persona.as_deref().and_then(short_persona_label) {
+            if let Some(display_name) = display_name.as_deref().map(str::trim)
+                && !display_name.is_empty()
+            {
                 vec![
                     "subagent ".cyan().bold(),
-                    persona.cyan().bold(),
+                    display_name.to_string().cyan().bold(),
                     " ".into(),
                     format!("({short_id})").dim(),
                 ]
@@ -1029,19 +1035,6 @@ fn group_chat_sender_spans(sender: &GroupChatSender) -> Vec<Span<'static>> {
                 vec!["subagent ".cyan().bold(), short_id.cyan().bold()]
             }
         }
-    }
-}
-
-fn short_persona_label(persona: &str) -> Option<String> {
-    let trimmed = persona.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let label = trimmed.split(':').next().map(str::trim).unwrap_or(trimmed);
-    if label.is_empty() {
-        None
-    } else {
-        Some(label.to_string())
     }
 }
 

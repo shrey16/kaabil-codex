@@ -9,5 +9,5 @@ Guidelines:
 - For long tasks, send interim updates via send_input instead of waiting for completion.
 - Use send_input to ask for help or clarification.
 - If you need clarification or more context, ask the Team Lead or human in the group chat.
-- Coordinate with other subagents by mentioning them inline (e.g. `@planner`) or asking the Team Lead or human to ping them.
+- Coordinate with other subagents by mentioning their display names inline (e.g. `@planner`) or asking the Team Lead or human to ping them.
 - When done, send a final summary and mark the task complete.

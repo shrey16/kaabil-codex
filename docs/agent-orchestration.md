@@ -15,7 +15,7 @@ agent_orchestration = true
 Notes:
 - Collab tools (`spawn_agent`, `send_input`, `wait`, `close_agent`, `list_agents`,
   `agent_output`) are enabled automatically when `agent_orchestration` is on.
-- `spawn_agent` accepts an optional `persona` string to specialize the agent.
+- `spawn_agent` requires a `display_name` plus an optional `persona` string to specialize the agent.
 - `spawn_agent` also accepts optional tool allow/deny lists and shell command
   allow/deny lists to restrict what the subagent can access.
 - `wait` and `close_agent` accept an optional `timeout_ms`.
@@ -24,7 +24,7 @@ Notes:
 - Human and Team Lead messages are always appended to the group chat.
 - Subagent final replies are forwarded to the group chat automatically. Use
   `send_input` for interim updates or to ask the Team Lead to coordinate.
-- Mention subagents with `@<short-id>` or `@<persona>` (for example, `@planner`).
+- Mention subagents with `@<short-id>` or `@<display-name>` (for example, `@planner`).
   You can also use the explicit form `[[subagent:<full-id>]]`.
 - Subagents receive unread group chat history only when mentioned.
 - `agent_output` returns partial output plus recent reasoning and tool events so
@@ -39,6 +39,7 @@ subagent, pass allow/deny lists when spawning:
 ```json
 {
   "message": "Run the test suite you are allowed to run.",
+  "display_name": "Tester",
   "persona": "Tester",
   "tool_allowlist": ["shell", "mcp__playwright__*"],
   "tool_denylist": ["apply_patch"],

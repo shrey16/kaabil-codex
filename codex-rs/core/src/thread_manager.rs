@@ -43,6 +43,7 @@ pub struct NewThread {
 pub(crate) struct SubagentInfo {
     pub(crate) parent_id: ThreadId,
     pub(crate) persona: Option<String>,
+    pub(crate) display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -187,6 +188,13 @@ impl ThreadManager {
             .and_then(|info| info.persona)
     }
 
+    pub async fn subagent_display_name(&self, subagent_id: ThreadId) -> Option<String> {
+        self.state
+            .subagent_info(subagent_id)
+            .await
+            .and_then(|info| info.display_name)
+    }
+
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         self.state.get_thread(thread_id).await
     }
@@ -209,6 +217,7 @@ impl ThreadManager {
         mut config: Config,
         prompt: String,
         persona: Option<String>,
+        display_name: Option<String>,
     ) -> CodexResult<ThreadId> {
         config.developer_instructions = crate::agent_personas::with_subagent_instructions(
             config.developer_instructions.as_deref(),
@@ -216,7 +225,7 @@ impl ThreadManager {
             parent_id,
         );
         self.agent_control()
-            .spawn_agent(parent_id, config, prompt, true, persona)
+            .spawn_agent(parent_id, config, prompt, true, persona, display_name)
             .await
     }
 
@@ -394,11 +403,16 @@ impl ThreadManagerState {
         parent_id: ThreadId,
         subagent_id: ThreadId,
         persona: Option<String>,
+        display_name: Option<String>,
     ) {
-        self.subagents
-            .write()
-            .await
-            .insert(subagent_id, SubagentInfo { parent_id, persona });
+        self.subagents.write().await.insert(
+            subagent_id,
+            SubagentInfo {
+                parent_id,
+                persona,
+                display_name,
+            },
+        );
         self.subagent_outputs
             .write()
             .await
