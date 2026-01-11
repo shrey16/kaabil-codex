@@ -13,7 +13,7 @@
 This is an experimental fork of Codex CLI built and maintained by Kaabil for its own development purposes.
 It is not the official upstream Codex distribution. Use at your own risk.
 
-Versioning follows upstream with a `-kaabil.N` suffix (example: `0.80.0-kaabil.2`).
+Versioning follows upstream with a `-kaabil.N` suffix (example: `0.80.0-kaabil.3`).
 To bump to a newer upstream release, run `./scripts/bump-kaabil-version.sh --upstream <version>`
 or `./scripts/bump-kaabil-version.sh --auto` to fetch the latest upstream tag.
 
@@ -46,6 +46,18 @@ Create a config at `~/.kaabil-codex/config.toml` (or set `CODEX_HOME`):
 [features]
 agent_orchestration = true
 ```
+
+If you want the Team Lead (TL) to stay read-only, add:
+
+```toml
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[tool_policy]
+tool_denylist = ["apply_patch", "shell", "exec_command", "write_stdin", "local_shell", "shell_command"]
+```
+
+Subagents can still be granted tools via per-agent allow/deny lists when you spawn them.
 
 To enable MCP tools, add `mcp_servers` entries in the same config file. If you are migrating
 from upstream Codex, copy the `[mcp_servers.*]` blocks from `~/.codex/config.toml`.
